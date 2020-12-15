@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use structopt::StructOpt;
 use structopt::clap::AppSettings;
@@ -137,7 +137,7 @@ async fn handle_request(hooks: &[hooks::Hook], mut request: hyper::Request<hyper
 
 	log::info!("executing hook for URL: {}", hook.url);
 	for cmd in &hook.commands {
-		if let Err(()) = run_command(cmd).await {
+		if let Err(()) = run_command(cmd, hook.working_dir.as_deref()).await {
 			return simple_response(hyper::StatusCode::INTERNAL_SERVER_ERROR, "failed to run hook, see server logs for more details");
 		}
 	}
@@ -145,15 +145,18 @@ async fn handle_request(hooks: &[hooks::Hook], mut request: hyper::Request<hyper
 	simple_response(hyper::StatusCode::OK, "")
 }
 
-async fn run_command(cmd: &hooks::Command) -> Result<(), ()> {
+async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>) -> Result<(), ()> {
 	use tokio::io::AsyncBufReadExt;
 	use tokio::stream::StreamExt;
 
-	let mut subprocess = tokio::process::Command::new(cmd.command())
-		.args(cmd.arguments())
-		.stdout(std::process::Stdio::piped())
-		.stderr(std::process::Stdio::piped())
-		.spawn()
+	let mut command = tokio::process::Command::new(cmd.command());
+	command.args(cmd.arguments());
+	command.stdout(std::process::Stdio::piped());
+	command.stderr(std::process::Stdio::piped());
+	if let Some(working_dir) = working_dir {
+		command.current_dir(working_dir);
+	}
+	let mut subprocess = command.spawn()
 		.map_err(|e| log::error!("failed to run command {:?}: {}", cmd.command(), e))?;
 
 	let stdout = tokio::io::BufReader::new(subprocess.stdout.take().unwrap());
