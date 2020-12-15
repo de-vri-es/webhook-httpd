@@ -14,6 +14,9 @@ pub struct Hook {
 
 	/// The working directory for the commands.
 	pub working_dir: Option<PathBuf>,
+
+	/// The shared secret for the X-Hub-Signature-256 header.
+	pub secret: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +93,7 @@ pub fn example_hooks() -> Vec<Hook> {
 			url: "/echo-foo".to_string(),
 			commands: vec![Command::from_vec(vec!["echo".to_string(), "foo".to_string()]).unwrap()],
 			working_dir: None,
+			secret: Some("some-shared-secret".to_string()),
 		},
 		Hook {
 			url: String::from("/update-repository"),
@@ -98,6 +102,7 @@ pub fn example_hooks() -> Vec<Hook> {
 				Command::from_vec(vec!["git".to_string(), "reset".to_string(), "--hard".to_string(), "origin/main".to_string()]).unwrap(),
 			],
 			working_dir: Some(PathBuf::from("/my/git/repo")),
+			secret: Some("generate-your-own-random-secrets".to_string()),
 		},
 	]
 }

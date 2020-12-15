@@ -89,12 +89,13 @@ fn do_main(options: Options) -> Result<(), ()> {
 	})
 }
 
-async fn handle_request(hooks: &[hooks::Hook], request: hyper::Request<hyper::Body>) -> hyper::Response<hyper::Body> {
+async fn handle_request(hooks: &[hooks::Hook], mut request: hyper::Request<hyper::Body>) -> hyper::Response<hyper::Body> {
 	log::info!("received {} request for {}", request.method(), request.uri().path());
 	if request.method() != hyper::Method::POST {
 		return simple_response(hyper::StatusCode::METHOD_NOT_ALLOWED, "hooks must use the POST method");
 	}
 
+	// Find the hook for the request URL.
 	let hook = match hooks.iter().find(|hook| hook.url == request.uri().path()) {
 		Some(x) => x,
 		None => {
@@ -102,6 +103,37 @@ async fn handle_request(hooks: &[hooks::Hook], request: hyper::Request<hyper::Bo
 			return simple_response(hyper::StatusCode::NOT_FOUND, "no matching hook found");
 		}
 	};
+
+	// Collect the body so we can feed it to a command and to check the signature.
+	let body = match collect_body(request.body_mut()).await {
+		Ok(x) => x,
+		Err(e) => {
+			log::error!("failed to read request body: {}", e);
+			return simple_response(hyper::StatusCode::BAD_REQUEST, "failed to read request body");
+		},
+	};
+
+	if let Some(secret) = &hook.secret {
+		let signature = match request.headers().get("X-Hub-Signature-256") {
+			Some(x) => x,
+			None => {
+				log::error!("request is missing a X-Hub-Signature-256 header");
+				return simple_response(hyper::StatusCode::BAD_REQUEST, "request must be signed with X-Hub-Signature-256 header");
+			},
+		};
+		let signature = match signature.to_str() {
+			Ok(x) => x,
+			Err(e) => {
+				log::error!("request has a malformed X-Hub-Signature-256 header: {}", e);
+				return simple_response(hyper::StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
+			},
+		};
+		let digest = compute_digest(secret, &body);
+		if !digest.eq_ignore_ascii_case(signature) {
+			log::error!("request signature ({}) does not match the payload digest ({})", signature, digest);
+			return simple_response(hyper::StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
+		}
+	}
 
 	log::info!("executing hook for URL: {}", hook.url);
 	for cmd in &hook.commands {
@@ -146,6 +178,34 @@ async fn run_command(cmd: &hooks::Command) -> Result<(), ()> {
 		log::error!("command {:?} exitted with {}", cmd.command(), status);
 		Err(())
 	}
+}
+
+fn compute_digest(secret: &str, data: &[u8]) -> String {
+	use hmac::{Mac, NewMac};
+	// HMAC keys can be any size, so unwrap can't fail.
+	let mut digest = hmac::Hmac::<sha2::Sha256>::new_varkey(secret.as_bytes()).unwrap();
+	digest.update(data);
+	let digest = digest.finalize();
+	to_hex(&digest.into_bytes())
+}
+
+fn to_hex(data: &[u8]) -> String {
+	let mut output = String::with_capacity(data.len() * 2);
+	for &byte in data {
+		output.push(std::char::from_digit(byte as u32 >> 4, 16).unwrap());
+		output.push(std::char::from_digit(byte as u32 & 0x0F, 16).unwrap());
+	}
+	output
+}
+
+async fn collect_body(body: &mut hyper::Body) -> Result<Vec<u8>, hyper::Error> {
+	use hyper::body::HttpBody;
+
+	let mut data = Vec::new();
+	while let Some(chunk) = body.data().await {
+		data.extend_from_slice(chunk?.as_ref());
+	}
+	Ok(data)
 }
 
 fn simple_response(status: hyper::StatusCode, data: impl Into<Vec<u8>>) -> hyper::Response<hyper::Body> {
