@@ -214,6 +214,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-webhookd"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "hyper",
+ "log",
+ "serde",
+ "structopt",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "httparse"
 version = "1.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -757,19 +770,6 @@ checksum = "1ce8a968cb1cd110d136ff8b819a556d6fb6d919363c61534f6860c7eb172ba0"
 dependencies = [
  "log",
  "try-lock",
-]
-
-[[package]]
-name = "webhook-httpd"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "hyper",
- "log",
- "serde",
- "structopt",
- "tokio",
- "toml",
 ]
 
 [[package]]
