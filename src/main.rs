@@ -1,11 +1,22 @@
+use hyper::Body;
+use hyper::StatusCode;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use structopt::StructOpt;
 use structopt::clap::AppSettings;
+use tokio::sync::oneshot;
 
 mod hooks;
 mod logging;
+mod scheduler;
+mod types;
+
+use scheduler::Scheduler;
+
+type Request = hyper::Request<Body>;
+type Response = hyper::Response<Body>;
 
 #[derive(StructOpt)]
 #[structopt(setting = AppSettings::ColoredHelp)]
@@ -48,7 +59,7 @@ fn main() {
 
 fn do_main(options: Options) -> Result<(), ()> {
 	if options.print_example_hooks {
-		println!("{}", hooks::to_toml(&hooks::example_hooks()));
+		println!("{}", hooks::example_hooks());
 		return Ok(());
 	}
 
@@ -59,12 +70,7 @@ fn do_main(options: Options) -> Result<(), ()> {
 		.map_err(|e| log::error!("failed to create tokio runtime: {}", e))?;
 
 	runtime.block_on(async move {
-		let hooks_path = options.hooks.as_ref().unwrap(); // Can't fail, hooks is a required option.
-		let hooks = std::fs::read_to_string(&hooks_path)
-			.map_err(|e| log::error!("failed to read {}: {}", hooks_path.display(), e))?;
-		let hooks = hooks::from_toml(&hooks)
-			.map_err(|e| log::error!("failed to parse hooks from {}: {}", hooks_path.display(), e))?;
-		let hooks = Arc::new(hooks);
+		let hooks = Arc::new(load_hooks(options.hooks.as_deref().unwrap())?);
 
 		let handle_connection = hyper::service::make_service_fn(move |_| {
 			let hooks = hooks.clone();
@@ -72,7 +78,7 @@ fn do_main(options: Options) -> Result<(), ()> {
 				hyper::Result::Ok(hyper::service::service_fn(move |request| {
 					let hooks = hooks.clone();
 					async move {
-						hyper::Result::Ok(handle_request(hooks.as_slice(), request).await)
+						hyper::Result::Ok(handle_request(hooks.as_ref(), request).await)
 					}
 				}))
 			}
@@ -89,18 +95,84 @@ fn do_main(options: Options) -> Result<(), ()> {
 	})
 }
 
-async fn handle_request(hooks: &[hooks::Hook], mut request: hyper::Request<hyper::Body>) -> hyper::Response<hyper::Body> {
+fn load_hooks(path: impl AsRef<Path>) -> Result<BTreeMap<String, HookScheduler>, ()> {
+	let path = path.as_ref();
+	let data = std::fs::read_to_string(&path)
+		.map_err(|e| log::error!("failed to read {}: {}", path.display(), e))?;
+	let hook_list = hooks::deserialize(&data)
+		.map_err(|e| log::error!("failed to parse hooks from {}: {}", path.display(), e))?;
+
+	let mut hook_map = BTreeMap::new();
+	for hook in hook_list {
+		let url = hook.url.clone();
+		let scheduler = HookScheduler::new(hook);
+		if hook_map.insert(url.clone(), scheduler).is_some() {
+			log::error!("multiple hooks defined for URL: {}", url);
+			return Err(());
+		}
+	}
+	Ok(hook_map)
+}
+
+struct HookScheduler {
+	hook: hooks::Hook,
+	scheduler: Scheduler,
+}
+
+impl HookScheduler {
+	fn new(hook: hooks::Hook) -> Self {
+		let scheduler = Scheduler::new(hook.max_concurrent.bound(), hook.queue_size.bound(), hook.queue_type);
+		Self { hook, scheduler }
+	}
+
+	async fn post(&self, body: Vec<u8>) -> Response {
+		let (done_tx, done_rx) = oneshot::channel();
+		let job = self.make_job(body, done_tx);
+		if let Err(e) = self.scheduler.post(job).await {
+			log::error!("scheduler did not accept new job: {}", e);
+			generic_error()
+		} else {
+			match done_rx.await {
+				Ok(response) => response,
+				Err(_) => {
+					log::error!("job was dropped before it finished");
+					simple_response(StatusCode::INTERNAL_SERVER_ERROR, "job dropped due to resource limits")
+				},
+			}
+		}
+	}
+
+	fn make_job(&self, body: Vec<u8>, done_tx: oneshot::Sender<Response>) -> scheduler::Job {
+		let commands = self.hook.commands.clone();
+		let working_dir = self.hook.working_dir.clone();
+		Box::pin(async move {
+			for cmd in commands {
+				if let Err(()) = run_command(&cmd, working_dir.as_deref(), &body).await {
+					done_tx
+						.send(simple_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to run hook, see server logs for more details"))
+						.unwrap_or(()); // Other end of channel dropped, nobody cares about our response anymore. We don't care either.
+					return;
+				}
+			}
+			done_tx
+				.send(simple_response(StatusCode::OK, "thank you, come again"))
+				.unwrap_or(()); // Other end of channel dropped, nobody cares about our response anymore. We don't care either.
+		})
+	}
+}
+
+async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Request) -> Response {
 	log::info!("received {} request for {}", request.method(), request.uri().path());
 	if request.method() != hyper::Method::POST {
 		return simple_response(hyper::StatusCode::METHOD_NOT_ALLOWED, "hooks must use the POST method");
 	}
 
-	// Find the hook for the request URL.
-	let hook = match hooks.iter().find(|hook| hook.url == request.uri().path()) {
+	// Look up the hook in the map.
+	let hook = match hooks.get(request.uri().path()) {
 		Some(x) => x,
 		None => {
 			log::info!("no hook found for URL: {}", request.uri().path());
-			return simple_response(hyper::StatusCode::NOT_FOUND, "no matching hook found");
+			return simple_response(StatusCode::NOT_FOUND, "no matching hook found");
 		}
 	};
 
@@ -109,55 +181,58 @@ async fn handle_request(hooks: &[hooks::Hook], mut request: hyper::Request<hyper
 		Ok(x) => x,
 		Err(e) => {
 			log::error!("failed to read request body: {}", e);
-			return simple_response(hyper::StatusCode::BAD_REQUEST, "failed to read request body");
+			return simple_response(StatusCode::BAD_REQUEST, "failed to read request body");
 		},
 	};
 
-	if let Some(secret) = &hook.secret {
+	if let Some(secret) = &hook.hook.secret {
 		let signature = match request.headers().get("X-Hub-Signature-256") {
 			Some(x) => x,
 			None => {
 				log::error!("request is missing a X-Hub-Signature-256 header");
-				return simple_response(hyper::StatusCode::BAD_REQUEST, "request must be signed with X-Hub-Signature-256 header");
+				return simple_response(StatusCode::BAD_REQUEST, "request must be signed with X-Hub-Signature-256 header");
 			},
 		};
 		let signature = match signature.to_str() {
 			Ok(x) => x,
 			Err(e) => {
 				log::error!("request has a malformed X-Hub-Signature-256 header: {}", e);
-				return simple_response(hyper::StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
+				return simple_response(StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
 			},
 		};
 		let digest = compute_digest(secret, &body);
 		if !digest.eq_ignore_ascii_case(signature) {
 			log::error!("request signature ({}) does not match the payload digest ({})", signature, digest);
-			return simple_response(hyper::StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
+			return simple_response(StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
 		}
 	}
 
-	log::info!("executing hook for URL: {}", hook.url);
-	for cmd in &hook.commands {
-		if let Err(()) = run_command(cmd, hook.working_dir.as_deref()).await {
-			return simple_response(hyper::StatusCode::INTERNAL_SERVER_ERROR, "failed to run hook, see server logs for more details");
-		}
-	}
-
-	simple_response(hyper::StatusCode::OK, "")
+	log::info!("triggering hook for URL: {}", hook.hook.url);
+	hook.post(body).await
 }
 
-async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>) -> Result<(), ()> {
-	use tokio::io::AsyncBufReadExt;
+async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>, body: &[u8]) -> Result<(), ()> {
+	use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 	use tokio::stream::StreamExt;
 
-	let mut command = tokio::process::Command::new(cmd.command());
-	command.args(cmd.arguments());
+	let mut command = tokio::process::Command::new(cmd.cmd());
+	command.args(cmd.args());
+	if cmd.wants_request_body() {
+		command.stdin(std::process::Stdio::piped());
+	}
 	command.stdout(std::process::Stdio::piped());
 	command.stderr(std::process::Stdio::piped());
 	if let Some(working_dir) = working_dir {
 		command.current_dir(working_dir);
 	}
 	let mut subprocess = command.spawn()
-		.map_err(|e| log::error!("failed to run command {:?}: {}", cmd.command(), e))?;
+		.map_err(|e| log::error!("failed to run command {:?}: {}", cmd.cmd(), e))?;
+
+	if let Some(mut stdin) = subprocess.stdin.take() {
+		stdin.write_all(body)
+			.await
+			.map_err(|e| log::error!("failed to write request body to stdin of command {:?}: {}", cmd.cmd(), e))?;
+	}
 
 	let stdout = tokio::io::BufReader::new(subprocess.stdout.take().unwrap());
 	let stderr = tokio::io::BufReader::new(subprocess.stderr.take().unwrap());
@@ -167,18 +242,18 @@ async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>) -> Result
 		let line = match line {
 			Ok(x) => x,
 			Err(e) => {
-				log::error!("failed to read command {:?} output: {}", cmd.command(), e);
+				log::error!("failed to read command {:?} output: {}", cmd.cmd(), e);
 				break;
 			},
 		};
-		log::info!("{}: {}", cmd.command(), line);
+		log::info!("{}: {}", cmd.cmd(), line);
 	}
 
-	let status = subprocess.await.map_err(|e| log::error!("failed to wait for command {:?}: {}", cmd.command(), e))?;
+	let status = subprocess.await.map_err(|e| log::error!("failed to wait for command {:?}: {}", cmd.cmd(), e))?;
 	if status.success() {
 		Ok(())
 	} else {
-		log::error!("command {:?} exitted with {}", cmd.command(), status);
+		log::error!("command {:?} exitted with {}", cmd.cmd(), status);
 		Err(())
 	}
 }
@@ -201,7 +276,7 @@ fn to_hex(data: &[u8]) -> String {
 	output
 }
 
-async fn collect_body(body: &mut hyper::Body) -> Result<Vec<u8>, hyper::Error> {
+async fn collect_body(body: &mut Body) -> Result<Vec<u8>, hyper::Error> {
 	use hyper::body::HttpBody;
 
 	let mut data = Vec::new();
@@ -211,7 +286,7 @@ async fn collect_body(body: &mut hyper::Body) -> Result<Vec<u8>, hyper::Error> {
 	Ok(data)
 }
 
-fn simple_response(status: hyper::StatusCode, data: impl Into<Vec<u8>>) -> hyper::Response<hyper::Body> {
+fn simple_response(status: StatusCode, data: impl Into<Vec<u8>>) -> Response {
 	let mut data: Vec<u8> = data.into();
 	if data.last() != Some(&b'\n') {
 		data.push(b'\n');
@@ -220,4 +295,8 @@ fn simple_response(status: hyper::StatusCode, data: impl Into<Vec<u8>>) -> hyper
 		.status(status)
 		.body(data.into())
 		.unwrap()
+}
+
+fn generic_error() -> Response {
+	simple_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to run hook, see server logs for more details")
 }
