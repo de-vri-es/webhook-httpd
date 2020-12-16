@@ -41,12 +41,7 @@ pub fn init(root_module: &str, verbosity: i8) {
 				},
 			};
 
-			writeln!(
-				buffer,
-				"{}{}",
-				prefix_style.value(prefix),
-				record.args()
-			)
+			writeln!(buffer, "{}{}", prefix_style.value(prefix), record.args())
 		})
 		.filter_level(log::LevelFilter::Warn)
 		.filter_module(root_module, log_level)

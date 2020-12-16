@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use structopt::StructOpt;
 use structopt::clap::AppSettings;
+use structopt::StructOpt;
 use tokio::sync::oneshot;
 
 mod hooks;
@@ -77,30 +77,23 @@ fn do_main(options: Options) -> Result<(), ()> {
 			async move {
 				hyper::Result::Ok(hyper::service::service_fn(move |request| {
 					let hooks = hooks.clone();
-					async move {
-						hyper::Result::Ok(handle_request(hooks.as_ref(), request).await)
-					}
+					async move { hyper::Result::Ok(handle_request(hooks.as_ref(), request).await) }
 				}))
 			}
 		});
 
 		let socket_address = options.socket_address();
-		let server = hyper::Server::try_bind(&socket_address)
-			.map_err(|e| log::error!("failed to bind to {}: {}", socket_address, e))?;
+		let server = hyper::Server::try_bind(&socket_address).map_err(|e| log::error!("failed to bind to {}: {}", socket_address, e))?;
 		log::info!("Listening on {}", socket_address);
-		server.serve(handle_connection)
-			.await
-			.map_err(|e| log::error!("{}", e))?;
+		server.serve(handle_connection).await.map_err(|e| log::error!("{}", e))?;
 		Ok(())
 	})
 }
 
 fn load_hooks(path: impl AsRef<Path>) -> Result<BTreeMap<String, HookScheduler>, ()> {
 	let path = path.as_ref();
-	let data = std::fs::read_to_string(&path)
-		.map_err(|e| log::error!("failed to read {}: {}", path.display(), e))?;
-	let hook_list = hooks::deserialize(&data)
-		.map_err(|e| log::error!("failed to parse hooks from {}: {}", path.display(), e))?;
+	let data = std::fs::read_to_string(&path).map_err(|e| log::error!("failed to read {}: {}", path.display(), e))?;
+	let hook_list = hooks::deserialize(&data).map_err(|e| log::error!("failed to parse hooks from {}: {}", path.display(), e))?;
 
 	let mut hook_map = BTreeMap::new();
 	for hook in hook_list {
@@ -148,15 +141,13 @@ impl HookScheduler {
 		Box::pin(async move {
 			for cmd in commands {
 				if let Err(()) = run_command(&cmd, working_dir.as_deref(), &body).await {
-					done_tx
-						.send(simple_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to run hook, see server logs for more details"))
-						.unwrap_or(()); // Other end of channel dropped, nobody cares about our response anymore. We don't care either.
+					// Ignore errors: other end of channel was dropped, nobody cares about our response anymore.
+					done_tx.send(generic_error()).unwrap_or(());
 					return;
 				}
 			}
-			done_tx
-				.send(simple_response(StatusCode::OK, "thank you, come again"))
-				.unwrap_or(()); // Other end of channel dropped, nobody cares about our response anymore. We don't care either.
+			// Ignore errors: other end of channel was dropped, nobody cares about our response anymore.
+			done_tx.send(simple_response(StatusCode::OK, "thank you, come again")).unwrap_or(());
 		})
 	}
 }
@@ -173,7 +164,7 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 		None => {
 			log::info!("no hook found for URL: {}", request.uri().path());
 			return simple_response(StatusCode::NOT_FOUND, "no matching hook found");
-		}
+		},
 	};
 
 	// Collect the body so we can feed it to a command and to check the signature.
@@ -225,11 +216,11 @@ async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>, body: &[u
 	if let Some(working_dir) = working_dir {
 		command.current_dir(working_dir);
 	}
-	let mut subprocess = command.spawn()
-		.map_err(|e| log::error!("failed to run command {:?}: {}", cmd.cmd(), e))?;
+	let mut subprocess = command.spawn().map_err(|e| log::error!("failed to run command {:?}: {}", cmd.cmd(), e))?;
 
 	if let Some(mut stdin) = subprocess.stdin.take() {
-		stdin.write_all(body)
+		stdin
+			.write_all(body)
 			.await
 			.map_err(|e| log::error!("failed to write request body to stdin of command {:?}: {}", cmd.cmd(), e))?;
 	}
@@ -249,7 +240,9 @@ async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>, body: &[u
 		log::info!("{}: {}", cmd.cmd(), line);
 	}
 
-	let status = subprocess.await.map_err(|e| log::error!("failed to wait for command {:?}: {}", cmd.cmd(), e))?;
+	let status = subprocess
+		.await
+		.map_err(|e| log::error!("failed to wait for command {:?}: {}", cmd.cmd(), e))?;
 	if status.success() {
 		Ok(())
 	} else {
@@ -291,10 +284,7 @@ fn simple_response(status: StatusCode, data: impl Into<Vec<u8>>) -> Response {
 	if data.last() != Some(&b'\n') {
 		data.push(b'\n');
 	}
-	hyper::Response::builder()
-		.status(status)
-		.body(data.into())
-		.unwrap()
+	hyper::Response::builder().status(status).body(data.into()).unwrap()
 }
 
 fn generic_error() -> Response {

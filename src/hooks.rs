@@ -97,11 +97,12 @@ fn default_stdin() -> Stdin {
 impl<'de> Deserialize<'de> for MaybeBound {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
-		D: serde::de::Deserializer<'de>
+		D: serde::de::Deserializer<'de>,
 	{
 		struct Visitor;
 		impl<'de> serde::de::Visitor<'de> for Visitor {
 			type Value = MaybeBound;
+
 			fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 				write!(f, "number or \"unlimited\"")
 			}
@@ -111,7 +112,9 @@ impl<'de> Deserialize<'de> for MaybeBound {
 
 				#[derive(Deserialize)]
 				#[serde(rename_all = "kebab-case")]
-				enum Variant { Unlimited };
+				enum Variant {
+					Unlimited,
+				};
 
 				let (_, data): (Variant, _) = data.variant()?;
 				data.unit_variant()?;
@@ -158,13 +161,12 @@ impl CommandArgs {
 impl<'de> Deserialize<'de> for CommandArgs {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
-		D: serde::de::Deserializer<'de>
+		D: serde::de::Deserializer<'de>,
 	{
 		use serde::de::Error;
 
 		let args = Vec::<String>::deserialize(deserializer)?;
-		Self::from_vec(args)
-			.map_err(D::Error::custom)
+		Self::from_vec(args).map_err(D::Error::custom)
 	}
 }
 
@@ -178,8 +180,8 @@ pub fn example_hooks() -> &'static str {
 
 #[cfg(test)]
 mod test {
-	use assert2::assert;
 	use super::*;
+	use assert2::assert;
 
 	#[test]
 	fn deserialize_example_hooks() {

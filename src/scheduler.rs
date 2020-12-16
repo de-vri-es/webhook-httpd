@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use tokio::sync::{oneshot, mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::types::QueueType;
 
@@ -20,9 +20,7 @@ pub struct Error {
 
 impl Error {
 	fn new(msg: impl std::string::ToString) -> Self {
-		Error {
-			msg: msg.to_string()
-		}
+		Error { msg: msg.to_string() }
 	}
 }
 
@@ -43,7 +41,8 @@ impl Scheduler {
 
 	pub async fn post(&self, job: Job) -> Result<(), Error> {
 		let (result_tx, result_rx) = oneshot::channel();
-		self.command_tx.send(Command::NewJob(job, result_tx))
+		self.command_tx
+			.send(Command::NewJob(job, result_tx))
 			.map_err(|_| Error::new("scheduler stopped"))?;
 		result_rx.await.map_err(|_| Error::new("scheduler stopped"))?
 	}
@@ -105,15 +104,13 @@ impl SchedulerInner {
 				Command::Stop(finish_queue) => {
 					self.accept_jobs = false;
 					self.process_queue = finish_queue;
-				}
+				},
 			}
 			if !self.accept_jobs && self.running == 0 {
 				break;
 			}
 		}
-		self.stopped_tx
-			.broadcast(true)
-			.unwrap_or(()) // Nobody cares that we stopped? That's alright, we don't care either.
+		self.stopped_tx.broadcast(true).unwrap_or(()) // Nobody cares that we stopped? That's alright, we don't care either.
 	}
 
 	fn handle_new_job(&mut self, job: Job, result_tx: oneshot::Sender<Result<(), Error>>) {
@@ -191,15 +188,11 @@ enum Command {
 mod test {
 	use super::*;
 	use assert2::{assert, let_assert};
-	use std::sync::Arc;
 	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::sync::Arc;
 
 	fn runtime() -> tokio::runtime::Runtime {
-		let_assert!(Ok(runtime) = tokio::runtime::Builder::new()
-			.basic_scheduler()
-			.enable_all()
-			.build()
-		);
+		let_assert!(Ok(runtime) = tokio::runtime::Builder::new().basic_scheduler().enable_all().build());
 		runtime
 	}
 
@@ -230,7 +223,6 @@ mod test {
 
 			scheduler.stop(false).await;
 			assert!(completed.load(Ordering::Relaxed) == 100);
-
 		});
 	}
 
