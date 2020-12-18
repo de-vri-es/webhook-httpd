@@ -7,10 +7,13 @@ use std::io::Write;
 ///
 /// Logging for all other modules is set to [`log::LevelFilter::Warn`].
 pub fn init(root_module: &str, verbosity: i8) {
-	let log_level = match verbosity {
+	let log_level = match verbosity.max(-2).min(2) {
+		-2 => log::LevelFilter::Error,
+		-1 => log::LevelFilter::Warn,
 		0 => log::LevelFilter::Info,
 		1 => log::LevelFilter::Debug,
-		_ => log::LevelFilter::Trace,
+		2 => log::LevelFilter::Trace,
+		_ => unreachable!(),
 	};
 
 	env_logger::Builder::new()
@@ -23,30 +26,30 @@ pub fn init(root_module: &str, verbosity: i8) {
 
 			match record.level() {
 				log::Level::Trace => {
-					prefix = "TRACE";
+					prefix = "TRACE: ";
 					prefix_style.set_bold(true);
 				},
 				log::Level::Debug => {
-					prefix = "DEBUG";
+					prefix = "DEBUG: ";
 					prefix_style.set_bold(true);
 				},
 				log::Level::Info => {
-					prefix = "INFO";
+					prefix = "INFO:  ";
 					prefix_style.set_bold(true);
 				},
 				log::Level::Warn => {
-					prefix = "WARN";
+					prefix = "WARN:  ";
 					prefix_style.set_color(Color::Yellow).set_bold(true);
 				},
 				log::Level::Error => {
-					prefix = "ERROR";
+					prefix = "ERROR: ";
 					prefix_style.set_color(Color::Red).set_bold(true);
 				},
 			};
 
-			writeln!(buffer, "{time} {level}: {msg}",
+			writeln!(buffer, "{time} {prefix}{msg}",
 				time = now.format("%F %H:%M:%S"),
-				level = prefix_style.value(prefix),
+				prefix = prefix_style.value(prefix),
 				msg = record.args()
 			)
 		})
