@@ -5,6 +5,7 @@ authors = ["Maarten de Vries <maarten@de-vri.es>"]
 edition = "2018"
 
 [dependencies]
+chrono = "0.4.19"
 env_logger = "0.8.2"
 hmac = "0.10.1"
 hyper = "0.13.9"

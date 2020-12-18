@@ -15,6 +15,7 @@ pub fn init(root_module: &str, verbosity: i8) {
 
 	env_logger::Builder::new()
 		.format(|buffer, record: &log::Record| {
+			let now = chrono::Local::now();
 			use env_logger::fmt::Color;
 
 			let mut prefix_style = buffer.style();
@@ -22,26 +23,32 @@ pub fn init(root_module: &str, verbosity: i8) {
 
 			match record.level() {
 				log::Level::Trace => {
-					prefix = "Trace: ";
+					prefix = "TRACE";
 					prefix_style.set_bold(true);
 				},
 				log::Level::Debug => {
-					prefix = "";
+					prefix = "DEBUG";
+					prefix_style.set_bold(true);
 				},
 				log::Level::Info => {
-					prefix = "";
+					prefix = "INFO";
+					prefix_style.set_bold(true);
 				},
 				log::Level::Warn => {
-					prefix = "Warning: ";
+					prefix = "WARN";
 					prefix_style.set_color(Color::Yellow).set_bold(true);
 				},
 				log::Level::Error => {
-					prefix = "Error: ";
+					prefix = "ERROR";
 					prefix_style.set_color(Color::Red).set_bold(true);
 				},
 			};
 
-			writeln!(buffer, "{}{}", prefix_style.value(prefix), record.args())
+			writeln!(buffer, "{time} {level}: {msg}",
+				time = now.format("%F %H:%M:%S"),
+				level = prefix_style.value(prefix),
+				msg = record.args()
+			)
 		})
 		.filter_level(log::LevelFilter::Warn)
 		.filter_module(root_module, log_level)
