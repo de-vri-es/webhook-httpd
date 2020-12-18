@@ -10,7 +10,6 @@ pub type Job = Pin<Box<dyn Future<Output = ()> + Send>>;
 #[derive(Debug, Clone)]
 pub struct Scheduler {
 	command_tx: mpsc::UnboundedSender<Command>,
-	stopped_rx: watch::Receiver<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,11 +31,10 @@ impl std::fmt::Display for Error {
 
 impl Scheduler {
 	pub fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stop_rx: watch::Receiver<bool>) -> Self {
-		let (stopped_tx, stopped_rx) = watch::channel(false);
 		let inner = SchedulerInner::new(max_concurrent, queue_size, queue_type, stop_rx);
 		let command_tx = inner.command_tx.clone();
 		tokio::spawn(inner.run());
-		Self { command_tx, stopped_rx }
+		Self { command_tx }
 	}
 
 	pub async fn post(&self, job: Job) -> Result<(), Error> {
@@ -45,16 +43,6 @@ impl Scheduler {
 			.send(Command::NewJob(job, result_tx))
 			.map_err(|_| Error::new("scheduler stopped"))?;
 		result_rx.await.map_err(|_| Error::new("scheduler stopped"))?
-	}
-
-	pub async fn jobs_running(&self) -> usize {
-		let (result_tx, result_rx) = oneshot::channel();
-		self.command_tx.send(Command::GetRunningJobs(result_tx)).unwrap_or_else(|_| ());
-		result_rx.await.unwrap_or(0)
-	}
-
-	pub fn stop(&mut self, finish_queue: bool) {
-		self.command_tx.send(Command::Stop(finish_queue)).unwrap_or_else(|_| ());
 	}
 }
 
@@ -103,13 +91,6 @@ impl SchedulerInner {
 					match command.unwrap() {
 						Command::NewJob(job, result_tx) => self.handle_new_job(job, result_tx),
 						Command::JobFinished => self.handle_job_finished(),
-						Command::GetRunningJobs(result_tx) => {
-							let _: Result<_, _> = result_tx.send(self.running);
-						},
-						Command::Stop(finish_queue) => {
-							self.accept_jobs = false;
-							self.process_queue = finish_queue;
-						},
 					}
 				},
 			)
@@ -185,8 +166,6 @@ fn limit_reached(value: usize, bound: Option<usize>) -> bool {
 enum Command {
 	NewJob(Job, oneshot::Sender<Result<(), Error>>),
 	JobFinished,
-	GetRunningJobs(oneshot::Sender<usize>),
-	Stop(bool),
 }
 
 #[cfg(test)]
@@ -195,6 +174,7 @@ mod test {
 	use assert2::{assert, let_assert};
 	use std::sync::atomic::{AtomicUsize, Ordering};
 	use std::sync::Arc;
+	use tokio::sync::Semaphore;
 
 	fn runtime() -> tokio::runtime::Runtime {
 		let_assert!(Ok(runtime) = tokio::runtime::Builder::new().basic_scheduler().enable_all().build());
@@ -205,29 +185,32 @@ mod test {
 	fn unlimited_concurrency() {
 		runtime().block_on(async {
 			let (mut stop_tx, stop_rx) = watch::channel(false);
-			let mut scheduler = Scheduler::new(None, None, QueueType::Fifo, stop_rx);
-			let mut senders = Vec::new();
+			let scheduler = Scheduler::new(None, None, QueueType::Fifo, stop_rx);
+			let started = Arc::new(AtomicUsize::new(0));
 			let completed = Arc::new(AtomicUsize::new(0));
+			let notify = Arc::new(Semaphore::new(0));
 
-			for i in 0..100 {
-				let (tx, rx) = oneshot::channel();
-				senders.push(tx);
-				let completed = completed.clone();
-				let job = Box::pin(async move {
-					// Wait for sender.
-					assert!(let Ok(()) = rx.await);
-					completed.fetch_add(1, Ordering::Relaxed);
+			for _ in 0..100 {
+				let job = Box::pin({
+					let started = started.clone();
+					let completed = completed.clone();
+					let notify = notify.clone();
+					async move {
+						started.fetch_add(1, Ordering::Relaxed);
+						notify.acquire().await.forget();
+						completed.fetch_add(1, Ordering::Relaxed);
+					}
 				});
+
 				assert!(let Ok(()) = scheduler.post(job).await);
-				assert!(scheduler.jobs_running().await == i + 1);
 			}
 
+			tokio::task::yield_now().await;
+			assert!(started.load(Ordering::Relaxed) == 100);
 			assert!(completed.load(Ordering::Relaxed) == 0);
-			for tx in senders {
-				assert!(let Ok(()) = tx.send(()));
-			}
 
-			scheduler.stop(false);
+			notify.add_permits(100);
+			stop_tx.broadcast(true).unwrap_or(());
 			stop_tx.closed().await;
 			assert!(completed.load(Ordering::Relaxed) == 100);
 		});
@@ -237,71 +220,28 @@ mod test {
 	fn limited_concurrency_abort_queue() {
 		runtime().block_on(async {
 			let (mut stop_tx, stop_rx) = watch::channel(false);
-			let mut scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo, stop_rx);
-			let mut senders = Vec::new();
-			let completed = Arc::new(AtomicUsize::new(0));
+			let scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo, stop_rx);
 
-			for i in 0..100 {
-				let (tx, rx) = oneshot::channel();
-				senders.push(tx);
-				let completed = completed.clone();
-				let job = Box::pin(async move {
-					// Wait for sender.
-					assert!(let Ok(()) = rx.await);
-					completed.fetch_add(1, Ordering::Relaxed);
+			let started = Arc::new(AtomicUsize::new(0));
+			let notify = Arc::new(Semaphore::new(0));
+			for _ in 0..100 {
+				let job = Box::pin({
+					let started = started.clone();
+					let notify = notify.clone();
+					async move {
+						started.fetch_add(1, Ordering::Relaxed);
+						notify.acquire().await.forget();
+					}
 				});
 				assert!(let Ok(()) = scheduler.post(job).await);
-				assert!(scheduler.jobs_running().await == (i + 1).min(4));
 			}
 
-			assert!(completed.load(Ordering::Relaxed) == 0);
-			for (i, tx) in senders.into_iter().enumerate() {
-				if i < 12 {
-					assert!(let Ok(()) = tx.send(()));
-				} else {
-					assert!(let Err(()) = tx.send(()));
-				}
-			}
+			tokio::task::yield_now().await;
+			assert!(started.load(Ordering::Relaxed) == 4);
 
-			scheduler.stop(false);
+			notify.add_permits(100);
+			stop_tx.broadcast(true).unwrap_or(());
 			stop_tx.closed().await;
-			assert!(completed.load(Ordering::Relaxed) == 4);
-		});
-	}
-
-	#[test]
-	fn limited_concurrency_finish_queue() {
-		runtime().block_on(async {
-			let (mut stop_tx, stop_rx) = watch::channel(false);
-			let mut scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo, stop_rx);
-			let mut senders = Vec::new();
-			let completed = Arc::new(AtomicUsize::new(0));
-
-			for i in 0..100 {
-				let (tx, rx) = oneshot::channel();
-				senders.push(tx);
-				let completed = completed.clone();
-				let job = Box::pin(async move {
-					// Wait for sender.
-					assert!(let Ok(()) = rx.await);
-					completed.fetch_add(1, Ordering::Relaxed);
-				});
-				assert!(let Ok(()) = scheduler.post(job).await);
-				assert!(scheduler.jobs_running().await == (i + 1).min(4));
-			}
-
-			assert!(completed.load(Ordering::Relaxed) == 0);
-			for (i, tx) in senders.into_iter().enumerate() {
-				if i < 12 {
-					assert!(let Ok(()) = tx.send(()));
-				} else {
-					assert!(let Err(()) = tx.send(()));
-				}
-			}
-
-			scheduler.stop(true);
-			stop_tx.closed().await;
-			assert!(completed.load(Ordering::Relaxed) == 12);
 		});
 	}
 }
