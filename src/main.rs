@@ -6,7 +6,9 @@ use std::time::Duration;
 use structopt::clap::AppSettings;
 use structopt::StructOpt;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::{oneshot, watch};
+use tokio::stream::StreamExt;
 
 mod hooks;
 mod logging;
@@ -71,37 +73,60 @@ fn do_main(options: Options) -> Result<(), ()> {
 		.map_err(|e| log::error!("failed to create tokio runtime: {}", e))?;
 
 	runtime.block_on(async move {
-		let hooks = Arc::new(load_hooks(options.hooks.as_deref().unwrap())?);
+		let (mut stop_tx, stop_rx) = watch::channel(false);
+		let hooks = Arc::new(load_hooks(options.hooks.as_ref().unwrap(), stop_rx)?);
 
 		let socket_address = options.socket_address();
-		let mut listener = TcpListener::bind(socket_address)
+		let listener = TcpListener::bind(socket_address)
 			.await
 			.map_err(|e| log::error!("failed to bind listening TCP socket to {}: {}", socket_address, e))?;
 		log::info!("listening for HTTP connections on {}", socket_address);
 
-		loop {
-			let (connection, _addr) = listener
-				.accept()
-				.await
-				.map_err(|e| log::error!("failed to accept connection on {}: {}", socket_address, e))?;
-			let hooks = hooks.clone();
-			tokio::spawn(async move {
-				let handler = hyper::service::service_fn(move |request| {
-					let hooks = hooks.clone();
-					async move { handle_request(&hooks, request).await }
-				});
-				Http::new()
-					.http1_keep_alive(true)
-					.http2_keep_alive_interval(Some(Duration::from_secs(20)))
-					.serve_connection(connection, handler)
-					.await
-					.unwrap_or_else(|e| log::error!("error while serving HTTP connection: {}", e))
-			});
-		}
+		let mut signals = hook_signals()?;
+		tokio::spawn(run_server(listener, socket_address, hooks));
+
+		let signal = signals.next().await
+			.ok_or_else(|| log::error!("signal stream closed unexpectedly"))?;
+		log::info!("received {} signal", signal);
+		stop_tx.broadcast(true).unwrap_or(());
+		stop_tx.closed().await;
+		Ok(())
 	})
 }
 
-fn load_hooks(path: impl AsRef<Path>) -> Result<BTreeMap<String, HookScheduler>, ()> {
+fn hook_signals() -> Result<impl tokio::stream::Stream<Item = &'static str>, ()> {
+	let sigint = signal(SignalKind::interrupt())
+		.map_err(|e| log::error!("failed to register SIGINT handler: {}", e))?
+		.map(|()| "SIGINT");
+	let sigterm = signal(SignalKind::terminate())
+		.map_err(|e| log::error!("failed to register SIGTERM handler: {}", e))?
+		.map(|()| "SIGTERM");
+	Ok(sigint.merge(sigterm))
+}
+
+async fn run_server(mut listener: TcpListener, socket_address: std::net::SocketAddr, hooks: Arc<BTreeMap<String, HookScheduler>>) -> Result<(), ()> {
+	loop {
+		let (connection, _addr) = listener
+			.accept()
+			.await
+			.map_err(|e| log::error!("failed to accept connection on {}: {}", socket_address, e))?;
+		let hooks = hooks.clone();
+		tokio::spawn(async move {
+			let handler = hyper::service::service_fn(move |request| {
+				let hooks = hooks.clone();
+				async move { handle_request(&hooks, request).await }
+			});
+			Http::new()
+				.http1_keep_alive(true)
+				.http2_keep_alive_interval(Some(Duration::from_secs(20)))
+				.serve_connection(connection, handler)
+				.await
+				.unwrap_or_else(|e| log::error!("error while serving HTTP connection: {}", e))
+		});
+	}
+}
+
+fn load_hooks(path: impl AsRef<Path>, stop_rx: watch::Receiver<bool>) -> Result<BTreeMap<String, HookScheduler>, ()> {
 	let path = path.as_ref();
 	let data = std::fs::read_to_string(&path).map_err(|e| log::error!("failed to read {}: {}", path.display(), e))?;
 	let hook_list = hooks::deserialize(&data).map_err(|e| log::error!("failed to parse hooks from {}: {}", path.display(), e))?;
@@ -109,7 +134,7 @@ fn load_hooks(path: impl AsRef<Path>) -> Result<BTreeMap<String, HookScheduler>,
 	let mut hook_map = BTreeMap::new();
 	for hook in hook_list {
 		let url = hook.url.clone();
-		let scheduler = HookScheduler::new(hook);
+		let scheduler = HookScheduler::new(hook, stop_rx.clone());
 		if hook_map.insert(url.clone(), scheduler).is_some() {
 			log::error!("multiple hooks defined for URL: {}", url);
 			return Err(());
@@ -124,8 +149,8 @@ struct HookScheduler {
 }
 
 impl HookScheduler {
-	fn new(hook: hooks::Hook) -> Self {
-		let scheduler = Scheduler::new(hook.max_concurrent.bound(), hook.queue_size.bound(), hook.queue_type);
+	fn new(hook: hooks::Hook, stop_rx: watch::Receiver<bool>) -> Self {
+		let scheduler = Scheduler::new(hook.max_concurrent.bound(), hook.queue_size.bound(), hook.queue_type, stop_rx);
 		Self { hook, scheduler }
 	}
 
@@ -218,7 +243,6 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 
 async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>, body: &[u8]) -> Result<(), ()> {
 	use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-	use tokio::stream::StreamExt;
 
 	let mut command = tokio::process::Command::new(cmd.cmd());
 	command.args(cmd.args());

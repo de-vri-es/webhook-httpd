@@ -31,9 +31,9 @@ impl std::fmt::Display for Error {
 }
 
 impl Scheduler {
-	pub fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType) -> Self {
+	pub fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stop_rx: watch::Receiver<bool>) -> Self {
 		let (stopped_tx, stopped_rx) = watch::channel(false);
-		let inner = SchedulerInner::new(max_concurrent, queue_size, queue_type, stopped_tx);
+		let inner = SchedulerInner::new(max_concurrent, queue_size, queue_type, stop_rx);
 		let command_tx = inner.command_tx.clone();
 		tokio::spawn(inner.run());
 		Self { command_tx, stopped_rx }
@@ -53,11 +53,8 @@ impl Scheduler {
 		result_rx.await.unwrap_or(0)
 	}
 
-	pub async fn stop(&mut self, finish_queue: bool) {
+	pub fn stop(&mut self, finish_queue: bool) {
 		self.command_tx.send(Command::Stop(finish_queue)).unwrap_or_else(|_| ());
-		while self.stopped_rx.recv().await != Some(true) {
-			// Keep going...
-		}
 	}
 }
 
@@ -71,13 +68,13 @@ struct SchedulerInner {
 	accept_jobs: bool,
 	process_queue: bool,
 
-	stopped_tx: watch::Sender<bool>,
+	stop_rx: watch::Receiver<bool>,
 	command_tx: mpsc::UnboundedSender<Command>,
 	command_rx: mpsc::UnboundedReceiver<Command>,
 }
 
 impl SchedulerInner {
-	fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stopped_tx: watch::Sender<bool>) -> Self {
+	fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stop_rx: watch::Receiver<bool>) -> Self {
 		let (command_tx, command_rx) = mpsc::unbounded_channel();
 		Self {
 			max_concurrent,
@@ -87,30 +84,40 @@ impl SchedulerInner {
 			queue: VecDeque::new(),
 			accept_jobs: true,
 			process_queue: true,
-			stopped_tx,
+			stop_rx,
 			command_tx,
 			command_rx,
 		}
 	}
 
 	async fn run(mut self) {
-		while let Some(command) = self.command_rx.recv().await {
-			match command {
-				Command::NewJob(job, result_tx) => self.handle_new_job(job, result_tx),
-				Command::JobFinished => self.handle_job_finished(),
-				Command::GetRunningJobs(result_tx) => {
-					let _: Result<_, _> = result_tx.send(self.running);
+		while self.accept_jobs || self.running > 0 {
+			tokio::select!(
+				stop = self.stop_rx.recv() => {
+					if stop.unwrap_or(true) {
+						self.accept_jobs = false;
+						self.process_queue = false;
+					}
 				},
-				Command::Stop(finish_queue) => {
-					self.accept_jobs = false;
-					self.process_queue = finish_queue;
+				command = self.command_rx.recv() => {
+					match command.unwrap() {
+						Command::NewJob(job, result_tx) => self.handle_new_job(job, result_tx),
+						Command::JobFinished => self.handle_job_finished(),
+						Command::GetRunningJobs(result_tx) => {
+							let _: Result<_, _> = result_tx.send(self.running);
+						},
+						Command::Stop(finish_queue) => {
+							self.accept_jobs = false;
+							self.process_queue = finish_queue;
+						},
+					}
 				},
-			}
-			if !self.accept_jobs && self.running == 0 {
-				break;
-			}
+			)
 		}
-		self.stopped_tx.broadcast(true).unwrap_or(()) // Nobody cares that we stopped? That's alright, we don't care either.
+
+		// Dropping `self.stop_rx` allows the sender to detect that we stopped.
+		// This happens anyway, but let's be explicit for documentation purposes.
+		drop(self.stop_rx);
 	}
 
 	fn handle_new_job(&mut self, job: Job, result_tx: oneshot::Sender<Result<(), Error>>) {
@@ -197,7 +204,8 @@ mod test {
 	#[test]
 	fn unlimited_concurrency() {
 		runtime().block_on(async {
-			let mut scheduler = Scheduler::new(None, None, QueueType::Fifo);
+			let (mut stop_tx, stop_rx) = watch::channel(false);
+			let mut scheduler = Scheduler::new(None, None, QueueType::Fifo, stop_rx);
 			let mut senders = Vec::new();
 			let completed = Arc::new(AtomicUsize::new(0));
 
@@ -219,7 +227,8 @@ mod test {
 				assert!(let Ok(()) = tx.send(()));
 			}
 
-			scheduler.stop(false).await;
+			scheduler.stop(false);
+			stop_tx.closed().await;
 			assert!(completed.load(Ordering::Relaxed) == 100);
 		});
 	}
@@ -227,7 +236,8 @@ mod test {
 	#[test]
 	fn limited_concurrency_abort_queue() {
 		runtime().block_on(async {
-			let mut scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo);
+			let (mut stop_tx, stop_rx) = watch::channel(false);
+			let mut scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo, stop_rx);
 			let mut senders = Vec::new();
 			let completed = Arc::new(AtomicUsize::new(0));
 
@@ -253,7 +263,8 @@ mod test {
 				}
 			}
 
-			scheduler.stop(false).await;
+			scheduler.stop(false);
+			stop_tx.closed().await;
 			assert!(completed.load(Ordering::Relaxed) == 4);
 		});
 	}
@@ -261,7 +272,8 @@ mod test {
 	#[test]
 	fn limited_concurrency_finish_queue() {
 		runtime().block_on(async {
-			let mut scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo);
+			let (mut stop_tx, stop_rx) = watch::channel(false);
+			let mut scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo, stop_rx);
 			let mut senders = Vec::new();
 			let completed = Arc::new(AtomicUsize::new(0));
 
@@ -287,7 +299,8 @@ mod test {
 				}
 			}
 
-			scheduler.stop(true).await;
+			scheduler.stop(true);
+			stop_tx.closed().await;
 			assert!(completed.load(Ordering::Relaxed) == 12);
 		});
 	}
