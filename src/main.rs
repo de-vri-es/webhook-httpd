@@ -1,11 +1,11 @@
-use hyper::Body;
-use hyper::StatusCode;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use structopt::clap::AppSettings;
 use structopt::StructOpt;
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 mod hooks;
@@ -15,6 +15,7 @@ mod types;
 
 use scheduler::Scheduler;
 
+use hyper::{server::conn::Http, Body, StatusCode};
 type Request = hyper::Request<Body>;
 type Response = hyper::Response<Body>;
 
@@ -72,21 +73,31 @@ fn do_main(options: Options) -> Result<(), ()> {
 	runtime.block_on(async move {
 		let hooks = Arc::new(load_hooks(options.hooks.as_deref().unwrap())?);
 
-		let handle_connection = hyper::service::make_service_fn(move |_| {
-			let hooks = hooks.clone();
-			async move {
-				hyper::Result::Ok(hyper::service::service_fn(move |request| {
-					let hooks = hooks.clone();
-					async move { hyper::Result::Ok(handle_request(hooks.as_ref(), request).await) }
-				}))
-			}
-		});
-
 		let socket_address = options.socket_address();
-		let server = hyper::Server::try_bind(&socket_address).map_err(|e| log::error!("failed to bind to {}: {}", socket_address, e))?;
-		log::info!("Listening on {}", socket_address);
-		server.serve(handle_connection).await.map_err(|e| log::error!("{}", e))?;
-		Ok(())
+		let mut listener = TcpListener::bind(socket_address)
+			.await
+			.map_err(|e| log::error!("failed to bind listening TCP socket to {}: {}", socket_address, e))?;
+		log::info!("listening for HTTP connections on {}", socket_address);
+
+		loop {
+			let (connection, _addr) = listener
+				.accept()
+				.await
+				.map_err(|e| log::error!("failed to accept connection on {}: {}", socket_address, e))?;
+			let hooks = hooks.clone();
+			tokio::spawn(async move {
+				let handler = hyper::service::service_fn(move |request| {
+					let hooks = hooks.clone();
+					async move { handle_request(&hooks, request).await }
+				});
+				Http::new()
+					.http1_keep_alive(true)
+					.http2_keep_alive_interval(Some(Duration::from_secs(20)))
+					.serve_connection(connection, handler)
+					.await
+					.unwrap_or_else(|e| log::error!("error while serving HTTP connection: {}", e))
+			});
+		}
 	})
 }
 
@@ -152,10 +163,10 @@ impl HookScheduler {
 	}
 }
 
-async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Request) -> Response {
+async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Request) -> Result<Response, std::convert::Infallible> {
 	log::info!("received {} request for {}", request.method(), request.uri().path());
 	if request.method() != hyper::Method::POST {
-		return simple_response(hyper::StatusCode::METHOD_NOT_ALLOWED, "hooks must use the POST method");
+		return Ok(simple_response(hyper::StatusCode::METHOD_NOT_ALLOWED, "hooks must use the POST method"));
 	}
 
 	// Look up the hook in the map.
@@ -163,7 +174,7 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 		Some(x) => x,
 		None => {
 			log::info!("no hook found for URL: {}", request.uri().path());
-			return simple_response(StatusCode::NOT_FOUND, "no matching hook found");
+			return Ok(simple_response(StatusCode::NOT_FOUND, "no matching hook found"));
 		},
 	};
 
@@ -172,7 +183,7 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 		Ok(x) => x,
 		Err(e) => {
 			log::error!("failed to read request body: {}", e);
-			return simple_response(StatusCode::BAD_REQUEST, "failed to read request body");
+			return Ok(simple_response(StatusCode::BAD_REQUEST, "failed to read request body"));
 		},
 	};
 
@@ -181,25 +192,28 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 			Some(x) => x,
 			None => {
 				log::error!("request is missing a X-Hub-Signature-256 header");
-				return simple_response(StatusCode::BAD_REQUEST, "request must be signed with X-Hub-Signature-256 header");
+				return Ok(simple_response(
+					StatusCode::BAD_REQUEST,
+					"request must be signed with X-Hub-Signature-256 header",
+				));
 			},
 		};
 		let signature = match signature.to_str() {
 			Ok(x) => x,
 			Err(e) => {
 				log::error!("request has a malformed X-Hub-Signature-256 header: {}", e);
-				return simple_response(StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
+				return Ok(simple_response(StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header"));
 			},
 		};
 		let digest = compute_digest(secret, &body);
 		if !digest.eq_ignore_ascii_case(signature) {
 			log::error!("request signature ({}) does not match the payload digest ({})", signature, digest);
-			return simple_response(StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header");
+			return Ok(simple_response(StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header"));
 		}
 	}
 
 	log::info!("triggering hook for URL: {}", hook.hook.url);
-	hook.post(body).await
+	Ok(hook.post(body).await)
 }
 
 async fn run_command(cmd: &hooks::Command, working_dir: Option<&Path>, body: &[u8]) -> Result<(), ()> {

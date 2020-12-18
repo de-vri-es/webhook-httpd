@@ -117,14 +117,12 @@ impl SchedulerInner {
 		if !self.accept_jobs {
 			result_tx.send(Err(Error::new("scheduler is not accepting new jobs"))).unwrap_or(());
 		} else if !limit_reached(self.running, self.max_concurrent) {
-			eprintln!("spawning job directly");
 			// There should never be something in the queue as long as there are free job slots.
 			debug_assert!(self.queue.is_empty());
 			self.running += 1;
 			self.spawn_job(job);
 			result_tx.send(Ok(())).unwrap_or(())
 		} else {
-			eprintln!("queueing job");
 			self.enqueue_job(job);
 			result_tx.send(Ok(())).unwrap_or(())
 		}
