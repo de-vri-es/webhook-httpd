@@ -15,12 +15,28 @@ pub struct Config {
 	#[serde(default = "default_port")]
 	pub port: u16,
 
+	/// TLS settings.
+	pub tls: Option<Tls>,
+
 	/// Log messages with this log leven and up.
 	#[serde(default = "default_log_level")]
 	pub log_level: log::LevelFilter,
 
 	/// The hooks to execute when a matching request is received.
 	pub hooks: Vec<Hook>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
+pub struct Tls {
+	/// The path to the private key encoded as PEM file.
+	pub private_key: PathBuf,
+
+	/// Path to the chain of certificates.
+	///
+	/// The first certificate in the chain must be the server certificate.
+	pub certificate_chain: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -11,10 +11,12 @@ use tokio::stream::StreamExt;
 
 mod config;
 mod logging;
+mod maybe_tls;
 mod scheduler;
 mod types;
 
 use config::{Config, Hook};
+use maybe_tls::MaybeTls;
 use scheduler::Scheduler;
 
 use hyper::{server::conn::Http, Body, StatusCode};
@@ -75,16 +77,27 @@ fn do_main(config: Config) -> Result<(), ()> {
 	runtime.block_on(async move {
 		let (mut stop_tx, stop_rx) = watch::channel(false);
 
+		let tls_acceptor = match &config.tls {
+			None => None,
+			Some(tls_config) => Some(load_tls_files(tls_config)?),
+		};
+
 		let socket_address = config.socket_address();
 		let hooks = Arc::new(build_hook_schedulers(config.hooks, stop_rx)?);
 
 		let listener = TcpListener::bind(socket_address)
 			.await
 			.map_err(|e| log::error!("failed to bind listening TCP socket to {}: {}", socket_address, e))?;
-		log::info!("listening for HTTP connections on {}", socket_address);
+
+		if tls_acceptor.is_some() {
+			log::info!("listening for HTTPS connections on {}", socket_address);
+		} else {
+			log::info!("listening for HTTP connections on {}", socket_address);
+		}
+
 
 		let mut signals = hook_signals()?;
-		tokio::spawn(run_server(listener, socket_address, hooks));
+		tokio::spawn(run_server(listener, tls_acceptor, socket_address, hooks));
 
 		let signal = signals.next().await
 			.ok_or_else(|| log::error!("signal stream closed unexpectedly"))?;
@@ -93,6 +106,16 @@ fn do_main(config: Config) -> Result<(), ()> {
 		stop_tx.closed().await;
 		Ok(())
 	})
+}
+
+fn load_tls_files(config: &config::Tls) -> Result<openssl::ssl::SslAcceptor, ()> {
+	let mut builder = openssl::ssl::SslAcceptor::mozilla_modern_v5(openssl::ssl::SslMethod::tls_server())
+		.map_err(|e| log::error!("failed to configure TLS acceptor: {}", e))?;
+	builder.set_private_key_file(&config.private_key, openssl::ssl::SslFiletype::PEM)
+		.map_err(|e| log::error!("failed to load private key from {}: {}", config.certificate_chain.display(), e))?;
+	builder.set_certificate_chain_file(&config.certificate_chain)
+		.map_err(|e| log::error!("failed to load certificate chain from {}: {}", config.certificate_chain.display(), e))?;
+	Ok(builder.build())
 }
 
 fn hook_signals() -> Result<impl tokio::stream::Stream<Item = &'static str>, ()> {
@@ -105,13 +128,30 @@ fn hook_signals() -> Result<impl tokio::stream::Stream<Item = &'static str>, ()>
 	Ok(sigint.merge(sigterm))
 }
 
-async fn run_server(mut listener: TcpListener, socket_address: std::net::SocketAddr, hooks: Arc<BTreeMap<String, HookScheduler>>) -> Result<(), ()> {
+async fn run_server(
+	mut listener: TcpListener,
+	tls_acceptor: Option<openssl::ssl::SslAcceptor>,
+	socket_address: std::net::SocketAddr,
+	hooks: Arc<BTreeMap<String, HookScheduler>>,
+) -> Result<(), ()> {
 	loop {
 		let (connection, addr) = listener
 			.accept()
 			.await
 			.map_err(|e| log::error!("failed to accept connection on {}: {}", socket_address, e))?;
-		log::debug!("accepted  new connection from {}", addr);
+		log::debug!("accepted new connection from {}", addr);
+
+		let connection = if let Some(tls_acceptor) = tls_acceptor.as_ref() {
+			match tokio_openssl::accept(tls_acceptor, connection).await {
+				Ok(x) => MaybeTls::Tls(x),
+				Err(e) => {
+					log::error!("TLS handshake failed: {}", e);
+					continue;
+				}
+			}
+		} else {
+			MaybeTls::Plain(connection)
+		};
 
 		let hooks = hooks.clone();
 		tokio::spawn(async move {

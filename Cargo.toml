@@ -4,16 +4,21 @@ version = "0.1.0"
 authors = ["Maarten de Vries <maarten@de-vri.es>"]
 edition = "2018"
 
+[features]
+static-openssl = ["openssl/vendored"]
+
 [dependencies]
 chrono = "0.4.19"
 env_logger = "0.8.2"
 hmac = "0.10.1"
 hyper = "0.13.9"
 log = { version = "0.4.11", features = ["serde"] }
+openssl = "0.10.31"
 serde = { version = "1.0.118", features = ["derive"] }
 sha2 = "0.9.2"
 structopt = "0.3.21"
 tokio = { version = "0.2.24", features = ["rt-core", "process", "stream", "io-util", "macros"] }
+tokio-openssl = "0.4.0"
 serde_yaml = "0.8.14"
 
 [dev-dependencies]
