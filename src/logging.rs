@@ -17,28 +17,28 @@ pub fn init(root_module: &str, level: log::LevelFilter) {
 
 			match record.level() {
 				log::Level::Trace => {
-					prefix = "TRACE: ";
+					prefix = "TRACE";
 					prefix_style.set_bold(true);
 				},
 				log::Level::Debug => {
-					prefix = "DEBUG: ";
+					prefix = "DEBUG";
 					prefix_style.set_bold(true);
 				},
 				log::Level::Info => {
-					prefix = "INFO:  ";
+					prefix = " INFO";
 					prefix_style.set_bold(true);
 				},
 				log::Level::Warn => {
-					prefix = "WARN:  ";
+					prefix = " WARN";
 					prefix_style.set_color(Color::Yellow).set_bold(true);
 				},
 				log::Level::Error => {
-					prefix = "ERROR: ";
+					prefix = "ERROR";
 					prefix_style.set_color(Color::Red).set_bold(true);
 				},
 			};
 
-			writeln!(buffer, "{time} {prefix}{msg}",
+			writeln!(buffer, "{time} {prefix}: {msg}",
 				time = now.format("%F %H:%M:%S"),
 				prefix = prefix_style.value(prefix),
 				msg = record.args()
