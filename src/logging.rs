@@ -7,7 +7,7 @@ use std::io::Write;
 ///
 /// Logging for all other modules is set to [`log::LevelFilter::Warn`].
 pub fn init(root_module: &str, level: log::LevelFilter) {
-	env_logger::Builder::new()
+	env_logger::Builder::from_default_env()
 		.format(|buffer, record: &log::Record| {
 			let now = chrono::Local::now();
 			use env_logger::fmt::Color;
@@ -44,7 +44,6 @@ pub fn init(root_module: &str, level: log::LevelFilter) {
 				msg = record.args()
 			)
 		})
-		.filter_level(log::LevelFilter::Warn)
 		.filter_module(root_module, level)
 		.init();
 }
