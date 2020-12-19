@@ -1,0 +1,25 @@
+bind-address: "::"
+port: 8091
+log-level: info
+hooks:
+  - url: "/hello"
+    commands:
+      - cmd: ["echo", "hello"]
+    max-concurrent: unlimited
+    secret: "generate-your-own-random-secrets"
+
+  - url: "/make-release-tarball"
+    commands:
+      - cmd: ["make-release-tarball"]
+        stdin: request-body
+    max-concurrent: unlimited
+    working-dir: "/path/to/repository/"
+    secret: "some-shared-secret"
+
+  - url: "/update-daemon-config"
+    commands:
+      - cmd: ["git", "fetch"]
+      - cmd: ["git", "reset", "--hard", "origin/main"]
+      - cmd: ["systemctl", "reload", "my-little-service"]
+    working-dir: "/etc/my-little-service/"
+    secret: "generate-your-own-random-secrets"

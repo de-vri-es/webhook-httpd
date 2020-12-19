@@ -6,16 +6,7 @@ use std::io::Write;
 /// depending on the verbosity parameter.
 ///
 /// Logging for all other modules is set to [`log::LevelFilter::Warn`].
-pub fn init(root_module: &str, verbosity: i8) {
-	let log_level = match verbosity.max(-2).min(2) {
-		-2 => log::LevelFilter::Error,
-		-1 => log::LevelFilter::Warn,
-		0 => log::LevelFilter::Info,
-		1 => log::LevelFilter::Debug,
-		2 => log::LevelFilter::Trace,
-		_ => unreachable!(),
-	};
-
+pub fn init(root_module: &str, level: log::LevelFilter) {
 	env_logger::Builder::new()
 		.format(|buffer, record: &log::Record| {
 			let now = chrono::Local::now();
@@ -54,6 +45,6 @@ pub fn init(root_module: &str, verbosity: i8) {
 			)
 		})
 		.filter_level(log::LevelFilter::Warn)
-		.filter_module(root_module, log_level)
+		.filter_module(root_module, level)
 		.init();
 }

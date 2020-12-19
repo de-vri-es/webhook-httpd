@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
-use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use structopt::clap::AppSettings;
@@ -10,11 +9,12 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{oneshot, watch};
 use tokio::stream::StreamExt;
 
-mod hooks;
+mod config;
 mod logging;
 mod scheduler;
 mod types;
 
+use config::{Config, Hook};
 use scheduler::Scheduler;
 
 use hyper::{server::conn::Http, Body, StatusCode};
@@ -26,56 +26,45 @@ type Response = hyper::Response<Body>;
 #[structopt(setting = AppSettings::DeriveDisplayOrder)]
 #[structopt(setting = AppSettings::UnifiedHelpMessage)]
 struct Options {
-	/// Show more verbose output (works up to two times).
+	/// The configuration file to load.
 	#[structopt(long, short)]
-	#[structopt(parse(from_occurrences))]
-	verbose: i8,
-
-	/// Show less verbose output (works up to two times).
-	#[structopt(long, short)]
-	#[structopt(parse(from_occurrences))]
-	quiet: i8,
-
-	/// Bind the server to a specific address.
-	#[structopt(long, short)]
-	address: Option<IpAddr>,
-
-	/// Bind to the specified port.
-	#[structopt(long, short)]
-	#[structopt(default_value = "8091")]
-	port: u16,
-
-	/// The TOML file with hooks.
-	#[structopt(long, short)]
-	#[structopt(value_name = "HOOKS.toml")]
 	#[structopt(required_unless = "print-example-hooks")]
-	hooks: Option<PathBuf>,
+	config: PathBuf,
 
-	/// Print example hooks and exit.
+	/// Print example configuration and exit.
 	#[structopt(long)]
-	print_example_hooks: bool,
-}
+	print_example_config: bool,
 
-impl Options {
-	fn socket_address(&self) -> std::net::SocketAddr {
-		let address = self.address.unwrap_or(std::net::Ipv6Addr::UNSPECIFIED.into());
-		std::net::SocketAddr::new(address, self.port)
-	}
+	/// Override the log level.
+	#[structopt(long, short)]
+	#[structopt(value_name = "LOG-LEVEL")]
+	#[structopt(possible_values = &["error", "warn", "info", "debug", "trace"])]
+	log_level: Option<log::LevelFilter>,
 }
 
 fn main() {
 	let options = Options::from_args();
-	logging::init(module_path!(), options.verbose - options.quiet);
-	if let Err(()) = do_main(options) {
-		std::process::exit(1);
+
+	if options.print_example_config {
+		println!("{}", Config::example());
+	} else {
+		match Config::read_from_file(&options.config) {
+			Err(e) => {
+				logging::init(module_path!(), options.log_level.unwrap_or(log::LevelFilter::Info));
+				log::error!("{}", e);
+				std::process::exit(1);
+			}
+			Ok(config) => {
+				logging::init(module_path!(), options.log_level.unwrap_or(config.log_level));
+				if let Err(()) = do_main(config) {
+					std::process::exit(1);
+				}
+			},
+		}
 	}
 }
 
-fn do_main(options: Options) -> Result<(), ()> {
-	if options.print_example_hooks {
-		println!("{}", hooks::example_hooks());
-		return Ok(());
-	}
+fn do_main(config: Config) -> Result<(), ()> {
 
 	let mut runtime = tokio::runtime::Builder::new()
 		.basic_scheduler()
@@ -85,9 +74,10 @@ fn do_main(options: Options) -> Result<(), ()> {
 
 	runtime.block_on(async move {
 		let (mut stop_tx, stop_rx) = watch::channel(false);
-		let hooks = Arc::new(load_hooks(options.hooks.as_ref().unwrap(), stop_rx)?);
 
-		let socket_address = options.socket_address();
+		let socket_address = config.socket_address();
+		let hooks = Arc::new(build_hook_schedulers(config.hooks, stop_rx)?);
+
 		let listener = TcpListener::bind(socket_address)
 			.await
 			.map_err(|e| log::error!("failed to bind listening TCP socket to {}: {}", socket_address, e))?;
@@ -139,32 +129,28 @@ async fn run_server(mut listener: TcpListener, socket_address: std::net::SocketA
 	}
 }
 
-fn load_hooks(path: impl AsRef<Path>, stop_rx: watch::Receiver<bool>) -> Result<BTreeMap<String, HookScheduler>, ()> {
-	let path = path.as_ref();
-	let data = std::fs::read_to_string(&path).map_err(|e| log::error!("failed to read {}: {}", path.display(), e))?;
-	let hook_list = hooks::deserialize(&data).map_err(|e| log::error!("failed to parse hooks from {}: {}", path.display(), e))?;
-
-	let mut hook_map = BTreeMap::new();
-	for hook in hook_list {
+fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<bool>) -> Result<BTreeMap<String, HookScheduler>, ()> {
+	let mut hook_schedulers = BTreeMap::new();
+	for hook in hooks {
 		let url = hook.url.clone();
 		let scheduler = HookScheduler::new(hook, stop_rx.clone());
-		if hook_map.insert(url.clone(), scheduler).is_some() {
+		if hook_schedulers.insert(url.clone(), scheduler).is_some() {
 			log::error!("multiple hooks defined for URL: {}", url);
 			return Err(());
 		}
 		log::info!("loaded hook for URL: {}", url)
 	}
-	log::info!("loaded {} hooks", hook_map.len());
-	Ok(hook_map)
+	log::info!("loaded {} hooks", hook_schedulers.len());
+	Ok(hook_schedulers)
 }
 
 struct HookScheduler {
-	hook: hooks::Hook,
+	hook: Hook,
 	scheduler: Scheduler,
 }
 
 impl HookScheduler {
-	fn new(hook: hooks::Hook, stop_rx: watch::Receiver<bool>) -> Self {
+	fn new(hook: Hook, stop_rx: watch::Receiver<bool>) -> Self {
 		let scheduler = Scheduler::new(hook.max_concurrent.bound(), hook.queue_size.bound(), hook.queue_type, stop_rx);
 		Self { hook, scheduler }
 	}
@@ -257,7 +243,7 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 	Ok(hook.post(body).await)
 }
 
-async fn run_command(cmd: &hooks::Command, hook: &hooks::Hook, body: &[u8]) -> Result<(), ()> {
+async fn run_command(cmd: &config::Command, hook: &Hook, body: &[u8]) -> Result<(), ()> {
 	use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 	let mut command = tokio::process::Command::new(cmd.cmd());

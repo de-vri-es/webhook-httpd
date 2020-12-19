@@ -1,7 +1,27 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::net::IpAddr;
 
 use crate::types::QueueType;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
+pub struct Config {
+	/// Bind the HTTP server to a specific address.
+	pub bind_address: Option<IpAddr>,
+
+	/// Bind the server to this port.
+	#[serde(default = "default_port")]
+	pub port: u16,
+
+	/// Log messages with this log leven and up.
+	#[serde(default = "default_log_level")]
+	pub log_level: log::LevelFilter,
+
+	/// The hooks to execute when a matching request is received.
+	pub hooks: Vec<Hook>,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +88,29 @@ pub enum Stdin {
 	RequestBody,
 }
 
+impl Config {
+	pub fn socket_address(&self) -> std::net::SocketAddr {
+		let address = self.bind_address.unwrap_or(std::net::Ipv6Addr::UNSPECIFIED.into());
+		std::net::SocketAddr::new(address, self.port)
+	}
+
+	pub fn parse(data: impl AsRef<[u8]>) -> Result<Self, serde_yaml::Error> {
+		serde_yaml::from_slice(data.as_ref())
+	}
+
+	pub fn read_from_file(path: impl AsRef<Path>) -> Result<Self, String> {
+		let path = path.as_ref();
+		let data = std::fs::read(path)
+			.map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
+		Self::parse(&data)
+			.map_err(|e| format!("failed to parse {}: {}", path.display(), e))
+	}
+
+	pub fn example() -> &'static str {
+		include_str!("../example-config.yaml")
+	}
+}
+
 impl MaybeBound {
 	/// Get the bound as `Option<usize>`.
 	pub fn bound(self) -> Option<usize> {
@@ -76,6 +119,14 @@ impl MaybeBound {
 			Self::N(x) => Some(x),
 		}
 	}
+}
+
+fn default_port() -> u16 {
+	8091
+}
+
+fn default_log_level() -> log::LevelFilter {
+	log::LevelFilter::Info
 }
 
 fn default_max_concurrent() -> MaybeBound {
@@ -170,14 +221,6 @@ impl<'de> Deserialize<'de> for CommandArgs {
 	}
 }
 
-pub fn deserialize(data: impl AsRef<str>) -> Result<Vec<Hook>, serde_yaml::Error> {
-	serde_yaml::from_str(data.as_ref())
-}
-
-pub fn example_hooks() -> &'static str {
-	include_str!("../example-hooks.yaml")
-}
-
 #[cfg(test)]
 mod test {
 	use super::*;
@@ -185,6 +228,6 @@ mod test {
 
 	#[test]
 	fn deserialize_example_hooks() {
-		assert!(let Ok(_) = deserialize(example_hooks()))
+		assert!(let Ok(_) = Config::parse(Config::example()))
 	}
 }
