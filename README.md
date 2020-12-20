@@ -63,3 +63,9 @@ hooks:
     working-dir: "/etc/my-little-service/"
     secret: "some-randomly-generated-secret"
 ```
+
+## Features
+The crate has one optional feature: `static-openssl`.
+When the feature is enabled, `openssl` is linked statically against a locally compiled OpenSSL.
+This can be used to create a binary with a minimal set of runtime dependencies,
+and it can make compilation easier on systems with no recent version of OpenSSL readily available.
