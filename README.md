@@ -10,7 +10,7 @@ Features:
 
 Hooks are configured as a sequence of commands to execute when a POST request is made for a certain URL.
 A hook can run an arbitrary number of commands, and you can configure any number of hooks for different URLs.
-For each command run by a hook, you can configure if it should receive the request body as standard input.
+For each command run by a hook, you can configure if it should receive the request body on standard input.
 
 ## Scheduling
 The server supports limiting the number of concurrently running jobs per hook.
@@ -22,15 +22,17 @@ This is a good configuration for hooks that just want to update things based on 
 but all parameters can be changed individually per hook.
 
 ## Command environment
-You can configure per command if it should receive the request body on standard input.
-Additionally, some environment variables are set:
-
-* `CONTENT_LENGTH`: The size of the request body (only if the request body is provided on standard input).
-* `CONTENT_TYPE`: The value of the HTTP `Content-Type` header (only if the request body is provided on standard input).
+Each command is executed with some environment variables set.
+The variables provide some information about the HTTP request that was made:
 * `URL_PATH`: The path portion of the request URL.
 * `URL_QUERY`: The query portion of the request URL.
 * `REMOTE_ADDR`: The IP address of the remote peer.
 * `REMOTE_PORT`: The port number of the remote peer.
+
+You can also configure a command to receive the request body on its standard input.
+In that case, some additional environment variables are set:
+* `CONTENT_TYPE`: The value of the `Content-Type` header.
+* `CONTENT_LENGTH`: The size of the request body in bytes.
 
 ## Example configuration
 A small configuration is shown below.
