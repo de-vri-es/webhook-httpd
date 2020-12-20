@@ -17,6 +17,12 @@ tls:
 
 # The hooks.
 hooks:
+  # A hook that prints the script environment, useful for debugging.
+  # Output is sent to the server log, not as HTTP response body.
+  - url: "/print-env"
+    commands:
+      - cmd: ["env"]
+
   - url: "/make-release-tarball"
     commands:
       - cmd: ["make-release-tarball"]

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -118,6 +119,21 @@ fn load_tls_files(config: &config::Tls) -> Result<openssl::ssl::SslAcceptor, ()>
 	Ok(builder.build())
 }
 
+fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<bool>) -> Result<BTreeMap<String, HookScheduler>, ()> {
+	let mut hook_schedulers = BTreeMap::new();
+	for hook in hooks {
+		let url = hook.url.clone();
+		let scheduler = HookScheduler::new(hook, stop_rx.clone());
+		if hook_schedulers.insert(url.clone(), scheduler).is_some() {
+			log::error!("multiple hooks defined for URL: {}", url);
+			return Err(());
+		}
+		log::info!("loaded hook for URL: {}", url)
+	}
+	log::info!("loaded {} hooks", hook_schedulers.len());
+	Ok(hook_schedulers)
+}
+
 fn hook_signals() -> Result<impl tokio::stream::Stream<Item = &'static str>, ()> {
 	let sigint = signal(SignalKind::interrupt())
 		.map_err(|e| log::error!("failed to register SIGINT handler: {}", e))?
@@ -157,7 +173,7 @@ async fn run_server(
 		tokio::spawn(async move {
 			let handler = hyper::service::service_fn(move |request| {
 				let hooks = hooks.clone();
-				async move { handle_request(&hooks, request).await }
+				async move { handle_request(&hooks, request, addr).await }
 			});
 			Http::new()
 				.http1_keep_alive(true)
@@ -167,21 +183,6 @@ async fn run_server(
 				.unwrap_or_else(|e| log::error!("error while serving HTTP connection: {}", e))
 		});
 	}
-}
-
-fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<bool>) -> Result<BTreeMap<String, HookScheduler>, ()> {
-	let mut hook_schedulers = BTreeMap::new();
-	for hook in hooks {
-		let url = hook.url.clone();
-		let scheduler = HookScheduler::new(hook, stop_rx.clone());
-		if hook_schedulers.insert(url.clone(), scheduler).is_some() {
-			log::error!("multiple hooks defined for URL: {}", url);
-			return Err(());
-		}
-		log::info!("loaded hook for URL: {}", url)
-	}
-	log::info!("loaded {} hooks", hook_schedulers.len());
-	Ok(hook_schedulers)
 }
 
 struct HookScheduler {
@@ -195,9 +196,9 @@ impl HookScheduler {
 		Self { hook, scheduler }
 	}
 
-	async fn post(&self, body: Vec<u8>) -> Response {
+	async fn post(&self, request: Request, body: Vec<u8>, remote_addr: SocketAddr) -> Response {
 		let (done_tx, done_rx) = oneshot::channel();
-		let job = self.make_job(body, done_tx);
+		let job = self.make_job(request, body, remote_addr, done_tx);
 		if let Err(e) = self.scheduler.post(job).await {
 			log::error!("{}: scheduler did not accept new job: {}", self.hook.url, e);
 			generic_error()
@@ -213,11 +214,11 @@ impl HookScheduler {
 		}
 	}
 
-	fn make_job(&self, body: Vec<u8>, done_tx: oneshot::Sender<Response>) -> scheduler::Job {
+	fn make_job(&self, request: Request, body: Vec<u8>, remote_addr: SocketAddr, done_tx: oneshot::Sender<Response>) -> scheduler::Job {
 		let hook = self.hook.clone();
 		Box::pin(async move {
 			for cmd in &hook.commands {
-				if let Err(()) = run_command(&cmd, &hook, &body).await {
+				if let Err(()) = run_command(&cmd, &hook, &request, &body, remote_addr).await {
 					// Ignore errors: other end of channel was dropped, nobody cares about our response anymore.
 					done_tx.send(generic_error()).unwrap_or(());
 					return;
@@ -229,7 +230,7 @@ impl HookScheduler {
 	}
 }
 
-async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Request) -> Result<Response, std::convert::Infallible> {
+async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Request, remote_addr: SocketAddr) -> Result<Response, std::convert::Infallible> {
 	log::trace!("received {} request for {}", request.method(), request.uri().path());
 	if request.method() != hyper::Method::POST {
 		return Ok(simple_response(hyper::StatusCode::METHOD_NOT_ALLOWED, "hooks must use the POST method"));
@@ -280,10 +281,10 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 	}
 
 	log::info!("{}: triggering hook", hook.hook.url);
-	Ok(hook.post(body).await)
+	Ok(hook.post(request, body, remote_addr).await)
 }
 
-async fn run_command(cmd: &config::Command, hook: &Hook, body: &[u8]) -> Result<(), ()> {
+async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body: &[u8], remote_addr: SocketAddr) -> Result<(), ()> {
 	use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 	let mut command = tokio::process::Command::new(cmd.cmd());
@@ -296,6 +297,14 @@ async fn run_command(cmd: &config::Command, hook: &Hook, body: &[u8]) -> Result<
 	if let Some(working_dir) = &hook.working_dir {
 		command.current_dir(working_dir);
 	}
+
+	// Fill in environment variables based on request information.
+	if cmd.wants_request_body() {
+		set_request_environment(&mut command, request, Some(body), remote_addr);
+	} else {
+		set_request_environment(&mut command, request, None, remote_addr);
+	}
+
 	let mut subprocess = command.spawn().map_err(|e| log::error!("{}: failed to run command {:?}: {}", hook.url, cmd.cmd(), e))?;
 
 	if let Some(mut stdin) = subprocess.stdin.take() {
@@ -369,4 +378,20 @@ fn simple_response(status: StatusCode, data: impl Into<Vec<u8>>) -> Response {
 
 fn generic_error() -> Response {
 	simple_response(StatusCode::INTERNAL_SERVER_ERROR, "failed to run hook, see server logs for more details")
+}
+
+fn set_request_environment(command: &mut tokio::process::Command, request: &Request, body: Option<&[u8]>, remote_addr: SocketAddr) {
+	use std::ffi::OsStr;
+	use std::os::unix::ffi::OsStrExt;
+
+	if let Some(body) = body {
+		command.env("CONTENT_LENGTH", body.len().to_string());
+		if let Some(content_type) = request.headers().get("Content-Type") {
+			command.env("CONTENT_TYPE", OsStr::from_bytes(content_type.as_bytes()));
+		}
+	}
+	command.env("URL_PATH", request.uri().path().to_string());
+	command.env("URL_QUERY", request.uri().query().unwrap_or(""));
+	command.env("REMOTE_ADDRESS", remote_addr.ip().to_string());
+	command.env("REMOTE_PORT", remote_addr.port().to_string());
 }
