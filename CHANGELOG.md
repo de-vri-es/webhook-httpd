@@ -1,4 +1,4 @@
-# Version 0.1.1
+# Version 0.1.1 - 2020-12-20
 
 * Fix the `--print-example-config` command line option.
 
