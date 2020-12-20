@@ -1,3 +1,8 @@
+# Version 0.1.1
+
+* Fix the `--print-example-config` command line option.
+
+
 # Version 0.1.0 - 2020-12-20
 
 * Run custom commands on POST requests for configured URLs.

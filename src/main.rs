@@ -31,8 +31,8 @@ type Response = hyper::Response<Body>;
 struct Options {
 	/// The configuration file to load.
 	#[structopt(long, short)]
-	#[structopt(required_unless = "print-example-hooks")]
-	config: PathBuf,
+	#[structopt(required_unless = "print-example-config")]
+	config: Option<PathBuf>,
 
 	/// Print example configuration and exit.
 	#[structopt(long)]
@@ -51,7 +51,7 @@ fn main() {
 	if options.print_example_config {
 		println!("{}", Config::example());
 	} else {
-		match Config::read_from_file(&options.config) {
+		match Config::read_from_file(&options.config.as_ref().unwrap()) {
 			Err(e) => {
 				logging::init(module_path!(), options.log_level.unwrap_or(log::LevelFilter::Info));
 				log::error!("{}", e);
