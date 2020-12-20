@@ -174,30 +174,25 @@ impl<'de> Deserialize<'de> for MaybeBound {
 				write!(f, "number or \"unlimited\"")
 			}
 
-			fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
-				use serde::de::VariantAccess;
-
-				#[derive(Deserialize)]
-				#[serde(rename_all = "kebab-case")]
-				enum Variant {
-					Unlimited,
-				};
-
-				let (_, data): (Variant, _) = data.variant()?;
-				data.unit_variant()?;
-				Ok(MaybeBound::Unlimited)
+			fn visit_str<E: serde::de::Error>(self, data: &str) -> Result<Self::Value, E> {
+				use serde::de::Unexpected;
+				if data == "unlimited" {
+					Ok(MaybeBound::Unlimited)
+				} else {
+					Err(E::invalid_value(Unexpected::Str(data), &"number or \"unlimited\""))
+				}
 			}
 
 			fn visit_u64<E: serde::de::Error>(self, data: u64) -> Result<Self::Value, E> {
 				use serde::de::Unexpected;
 				use std::convert::TryFrom;
 				usize::try_from(data)
-					.map_err(|_| E::invalid_value(Unexpected::Unsigned(data), &format!("a number in the range 0-{}", usize::MAX).as_str()))
+					.map_err(|_| E::invalid_value(Unexpected::Unsigned(data), &format!("a number in the range 0-{} or \"unlimited\"", usize::MAX).as_str()))
 					.map(MaybeBound::N)
 			}
 		}
 
-		deserializer.deserialize_enum("MaybeUnbound", &["Unlimited"], Visitor)
+		deserializer.deserialize_any(Visitor)
 	}
 }
 
