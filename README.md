@@ -1,4 +1,4 @@
-# http-webhookd
+# http-webhookd [![tests](https://github.com/de-vri-es/http-webhookd-rs/workflows/tests/badge.svg)](https://github.com/de-vri-es/http-webhookd-rs/actions?query=workflow%3Atests)
 
 `http-webhookd` is a simple HTTP(S) server to receive webhooks, written in Rust.
 
