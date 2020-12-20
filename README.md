@@ -1,6 +1,6 @@
-# http-webhookd [![tests](https://github.com/de-vri-es/http-webhookd-rs/workflows/tests/badge.svg)](https://github.com/de-vri-es/http-webhookd-rs/actions?query=workflow%3Atests)
+# webhook-httpd [![tests](https://github.com/de-vri-es/webhook-httpd/workflows/tests/badge.svg)](https://github.com/de-vri-es/webhook-httpd/actions?query=workflow%3Atests)
 
-`http-webhookd` is a simple HTTP(S) server to receive webhooks, written in Rust.
+`webhook-httpd` is a simple HTTP(S) server to receive webhooks, written in Rust.
 
 Features:
  * Run commands on POST requests based on the request URL.
@@ -34,7 +34,7 @@ Additionally, some environment variables are set:
 
 ## Example configuration
 A small configuration is shown below.
-For a more detailed example with comments, see [`example-config.yaml`](example-config.yaml) or run `http-webhookd --print-example-config`.
+For a more detailed example with comments, see [`example-config.yaml`](example-config.yaml) or run `webhook-httpd --print-example-config`.
 
 ```yaml
 port: 8091
