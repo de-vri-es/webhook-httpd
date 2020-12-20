@@ -255,21 +255,11 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 	};
 
 	if let Some(secret) = &hook.hook.secret {
-		let signature = match request.headers().get("X-Hub-Signature-256") {
-			Some(x) => x,
-			None => {
-				log::error!("{}: request is not signed with a X-Hub-Signature-256 header", hook.hook.url);
-				return Ok(simple_response(
-					StatusCode::BAD_REQUEST,
-					"request must be signed with X-Hub-Signature-256 header",
-				));
-			},
-		};
-		let signature = match signature.to_str() {
+		let signature = match get_signature_header(request.headers()) {
 			Ok(x) => x,
 			Err(e) => {
-				log::error!("{}: malformed X-Hub-Signature-256 header: {}", hook.hook.url, e);
-				return Ok(simple_response(StatusCode::BAD_REQUEST, "invalid X-Hub-Signature-256 header"));
+				log::error!("{}: {}", hook.hook.url, e);
+				return Ok(simple_response(StatusCode::BAD_REQUEST, "missing or invalid X-Hub-Signature-256 header"));
 			},
 		};
 		let digest = compute_digest(secret, &body);
@@ -338,6 +328,16 @@ async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body
 		log::error!("{}: command {:?} exitted with {}", hook.url, cmd.cmd(), status);
 		Err(())
 	}
+}
+
+fn get_signature_header(headers: &hyper::HeaderMap) -> Result<&str, String> {
+	let signature = headers.get("X-Hub-Signature-256")
+		.ok_or("request is not signed with a X-Hub-Signature-256 header")?
+		.to_str()
+		.map_err(|e| format!("malformed X-Hub-Signature-256 header: {}", e))?
+		.strip_prefix("sha256=")
+		.ok_or("malformed X-Hub-Signature-256 header: signature does not start with 'sha256='")?;
+	Ok(signature)
 }
 
 fn compute_digest(secret: &str, data: &[u8]) -> String {
