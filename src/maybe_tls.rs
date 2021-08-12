@@ -9,17 +9,10 @@ pub enum MaybeTls<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncRead for MaybeTls<T> {
-	fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
+	fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut tokio::io::ReadBuf) -> Poll<std::io::Result<()>> {
 		match self.get_mut() {
 			Self::Plain(x) => Pin::new(x).poll_read(cx, buf),
 			Self::Tls(x) => Pin::new(x).poll_read(cx, buf),
-		}
-	}
-
-	unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [std::mem::MaybeUninit<u8>]) -> bool {
-		match self {
-			Self::Plain(x) => Pin::new(x).prepare_uninitialized_buffer(buf),
-			Self::Tls(x) => Pin::new(x).prepare_uninitialized_buffer(buf),
 		}
 	}
 }

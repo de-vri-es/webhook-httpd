@@ -8,7 +8,7 @@ use structopt::StructOpt;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{oneshot, watch};
-use tokio::stream::StreamExt;
+use tokio_stream::StreamExt;
 
 mod config;
 mod logging;
@@ -70,15 +70,13 @@ fn main() {
 }
 
 fn do_main(config: Config) -> Result<(), ()> {
-
-	let mut runtime = tokio::runtime::Builder::new()
-		.basic_scheduler()
+	let runtime = tokio::runtime::Builder::new_current_thread()
 		.enable_all()
 		.build()
 		.map_err(|e| log::error!("failed to create tokio runtime: {}", e))?;
 
 	runtime.block_on(async move {
-		let (mut stop_tx, stop_rx) = watch::channel(false);
+		let (stop_tx, stop_rx) = watch::channel(());
 
 		let tls_acceptor = match &config.tls {
 			None => None,
@@ -99,19 +97,18 @@ fn do_main(config: Config) -> Result<(), ()> {
 		}
 
 
-		let mut signals = hook_signals()?;
+		let signals = hook_signals()?;
 		tokio::spawn(run_server(listener, tls_acceptor, socket_address, hooks));
 
-		let signal = signals.next().await
-			.ok_or_else(|| log::error!("signal stream closed unexpectedly"))?;
+		let signal = signals.await;
 		log::info!("received {} signal", signal);
-		stop_tx.broadcast(true).unwrap_or(());
+		stop_tx.send(()).unwrap_or(());
 		stop_tx.closed().await;
 		Ok(())
 	})
 }
 
-fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<bool>) -> Result<BTreeMap<String, HookScheduler>, ()> {
+fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<()>) -> Result<BTreeMap<String, HookScheduler>, ()> {
 	let mut hook_schedulers = BTreeMap::new();
 	for hook in hooks {
 		let url = hook.url.clone();
@@ -126,18 +123,21 @@ fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<bool>) -> Re
 	Ok(hook_schedulers)
 }
 
-fn hook_signals() -> Result<impl tokio::stream::Stream<Item = &'static str>, ()> {
-	let sigint = signal(SignalKind::interrupt())
-		.map_err(|e| log::error!("failed to register SIGINT handler: {}", e))?
-		.map(|()| "SIGINT");
-	let sigterm = signal(SignalKind::terminate())
-		.map_err(|e| log::error!("failed to register SIGTERM handler: {}", e))?
-		.map(|()| "SIGTERM");
-	Ok(sigint.merge(sigterm))
+fn hook_signals() -> Result<impl std::future::Future<Output = &'static str>, ()> {
+	let mut sigint = signal(SignalKind::interrupt())
+		.map_err(|e| log::error!("failed to register SIGINT handler: {}", e))?;
+	let mut sigterm = signal(SignalKind::terminate())
+		.map_err(|e| log::error!("failed to register SIGTERM handler: {}", e))?;
+	Ok(async move {
+		tokio::select!(
+			_ = sigint.recv() => "SIGINT",
+			_ = sigterm.recv() => "SIGTERM",
+		)
+	})
 }
 
 async fn run_server(
-	mut listener: TcpListener,
+	listener: TcpListener,
 	mut tls_acceptor: Option<TlsAcceptor>,
 	socket_address: std::net::SocketAddr,
 	hooks: Arc<BTreeMap<String, HookScheduler>>,
@@ -180,7 +180,7 @@ struct HookScheduler {
 }
 
 impl HookScheduler {
-	fn new(hook: Hook, stop_rx: watch::Receiver<bool>) -> Self {
+	fn new(hook: Hook, stop_rx: watch::Receiver<()>) -> Self {
 		let scheduler = Scheduler::new(hook.max_concurrent.bound(), hook.queue_size.bound(), hook.queue_type, stop_rx);
 		Self { hook, scheduler }
 	}
@@ -264,7 +264,8 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 }
 
 async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body: &[u8], remote_addr: SocketAddr) -> Result<(), ()> {
-	use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+	use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+	use tokio_stream::wrappers::LinesStream;
 
 	let mut command = tokio::process::Command::new(cmd.cmd());
 	command.args(cmd.args());
@@ -293,9 +294,9 @@ async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body
 			.map_err(|e| log::error!("{}: failed to write request body to stdin of command {:?}: {}", hook.url, cmd.cmd(), e))?;
 	}
 
-	let stdout = tokio::io::BufReader::new(subprocess.stdout.take().unwrap());
-	let stderr = tokio::io::BufReader::new(subprocess.stderr.take().unwrap());
-	let mut output = stdout.lines().merge(stderr.lines());
+	let stdout = LinesStream::new(BufReader::new(subprocess.stdout.take().unwrap()).lines());
+	let stderr = LinesStream::new(BufReader::new(subprocess.stderr.take().unwrap()).lines());
+	let mut output = stdout.merge(stderr);
 
 	while let Some(line) = output.next().await {
 		let line = match line {
@@ -309,6 +310,7 @@ async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body
 	}
 
 	let status = subprocess
+		.wait()
 		.await
 		.map_err(|e| log::error!("{}: failed to wait for command {:?}: {}", hook.url, cmd.cmd(), e))?;
 	if status.success() {
@@ -332,7 +334,7 @@ fn get_signature_header(headers: &hyper::HeaderMap) -> Result<&str, String> {
 fn compute_digest(secret: &str, data: &[u8]) -> String {
 	use hmac::{Mac, NewMac};
 	// HMAC keys can be any size, so unwrap can't fail.
-	let mut digest = hmac::Hmac::<sha2::Sha256>::new_varkey(secret.as_bytes()).unwrap();
+	let mut digest = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
 	digest.update(data);
 	let digest = digest.finalize();
 	to_hex(&digest.into_bytes())

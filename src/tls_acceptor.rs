@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use openssl::ssl::SslAcceptor;
+use openssl::ssl::{Ssl, SslAcceptor};
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
@@ -56,9 +57,15 @@ impl TlsAcceptor {
 			log::info!("reloading TLS certificate and key.");
 			self.reload().ok();
 		}
-		tokio_openssl::accept(&self.acceptor, connection)
+		let session = Ssl::new(self.acceptor.context())
+			.map_err(|e| log::error!("failed to create new TLS session: {}", e))?;
+		let mut stream = SslStream::new(session, connection)
+			.map_err(|e| log::error!("failed to create TLS stream: {}", e))?;
+		Pin::new(&mut stream)
+			.accept()
 			.await
-			.map_err(|e| log::error!("TLS handshake failed: {}", e))
+			.map_err(|e| log::error!("TLS handshake failed: {}", e))?;
+		Ok(stream)
 	}
 }
 

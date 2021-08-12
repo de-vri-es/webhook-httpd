@@ -30,7 +30,7 @@ impl std::fmt::Display for Error {
 }
 
 impl Scheduler {
-	pub fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stop_rx: watch::Receiver<bool>) -> Self {
+	pub fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stop_rx: watch::Receiver<()>) -> Self {
 		let inner = SchedulerInner::new(max_concurrent, queue_size, queue_type, stop_rx);
 		let command_tx = inner.command_tx.clone();
 		tokio::spawn(inner.run());
@@ -56,13 +56,13 @@ struct SchedulerInner {
 	accept_jobs: bool,
 	process_queue: bool,
 
-	stop_rx: watch::Receiver<bool>,
+	stop_rx: watch::Receiver<()>,
 	command_tx: mpsc::UnboundedSender<Command>,
 	command_rx: mpsc::UnboundedReceiver<Command>,
 }
 
 impl SchedulerInner {
-	fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stop_rx: watch::Receiver<bool>) -> Self {
+	fn new(max_concurrent: Option<usize>, queue_size: Option<usize>, queue_type: QueueType, stop_rx: watch::Receiver<()>) -> Self {
 		let (command_tx, command_rx) = mpsc::unbounded_channel();
 		Self {
 			max_concurrent,
@@ -81,11 +81,9 @@ impl SchedulerInner {
 	async fn run(mut self) {
 		while self.accept_jobs || self.running > 0 {
 			tokio::select!(
-				stop = self.stop_rx.recv() => {
-					if stop.unwrap_or(true) {
-						self.accept_jobs = false;
-						self.process_queue = false;
-					}
+				_ = self.stop_rx.changed() => {
+					self.accept_jobs = false;
+					self.process_queue = false;
 				},
 				command = self.command_rx.recv() => {
 					match command.unwrap() {
@@ -177,14 +175,14 @@ mod test {
 	use tokio::sync::Semaphore;
 
 	fn runtime() -> tokio::runtime::Runtime {
-		let_assert!(Ok(runtime) = tokio::runtime::Builder::new().basic_scheduler().enable_all().build());
+		let_assert!(Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build());
 		runtime
 	}
 
 	#[test]
 	fn unlimited_concurrency() {
 		runtime().block_on(async {
-			let (mut stop_tx, stop_rx) = watch::channel(false);
+			let (stop_tx, stop_rx) = watch::channel(());
 			let scheduler = Scheduler::new(None, None, QueueType::Fifo, stop_rx);
 			let started = Arc::new(AtomicUsize::new(0));
 			let completed = Arc::new(AtomicUsize::new(0));
@@ -197,7 +195,8 @@ mod test {
 					let notify = notify.clone();
 					async move {
 						started.fetch_add(1, Ordering::Relaxed);
-						notify.acquire().await.forget();
+						let_assert!(Ok(permit) = notify.acquire().await);
+						permit.forget();
 						completed.fetch_add(1, Ordering::Relaxed);
 					}
 				});
@@ -210,7 +209,7 @@ mod test {
 			assert!(completed.load(Ordering::Relaxed) == 0);
 
 			notify.add_permits(100);
-			stop_tx.broadcast(true).unwrap_or(());
+			stop_tx.send(()).unwrap_or(());
 			stop_tx.closed().await;
 			assert!(completed.load(Ordering::Relaxed) == 100);
 		});
@@ -219,7 +218,7 @@ mod test {
 	#[test]
 	fn limited_concurrency_abort_queue() {
 		runtime().block_on(async {
-			let (mut stop_tx, stop_rx) = watch::channel(false);
+			let (stop_tx, stop_rx) = watch::channel(());
 			let scheduler = Scheduler::new(Some(4), Some(8), QueueType::Fifo, stop_rx);
 
 			let started = Arc::new(AtomicUsize::new(0));
@@ -230,7 +229,8 @@ mod test {
 					let notify = notify.clone();
 					async move {
 						started.fetch_add(1, Ordering::Relaxed);
-						notify.acquire().await.forget();
+						let_assert!(Ok(permit) = notify.acquire().await);
+						permit.forget();
 					}
 				});
 				assert!(let Ok(()) = scheduler.post(job).await);
@@ -240,7 +240,7 @@ mod test {
 			assert!(started.load(Ordering::Relaxed) == 4);
 
 			notify.add_permits(100);
-			stop_tx.broadcast(true).unwrap_or(());
+			stop_tx.send(()).unwrap_or(());
 			stop_tx.closed().await;
 		});
 	}

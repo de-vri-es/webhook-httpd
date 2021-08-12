@@ -17,17 +17,18 @@ static-openssl = ["openssl/vendored"]
 
 [dependencies]
 chrono = "0.4.19"
-env_logger = "0.8.2"
-hmac = "0.10.1"
-hyper = "0.13.9"
-log = { version = "0.4.11", features = ["serde"] }
-openssl = "0.10.31"
-serde = { version = "1.0.118", features = ["derive"] }
-sha2 = "0.9.2"
-structopt = "0.3.21"
-tokio = { version = "0.2.24", features = ["rt-core", "process", "stream", "io-util", "macros", "time"] }
-tokio-openssl = "0.4.0"
+env_logger = "0.8.4"
+hmac = "0.11.0"
+hyper = { version = "0.14.11", features = ["http1", "http2", "runtime", "server"] }
+log = { version = "0.4.14", features = ["serde"] }
+openssl = "0.10.35"
+serde = { version = "1.0.127", features = ["derive"] }
+sha2 = "0.9.5"
+structopt = "0.3.22"
+tokio = { version = "1.9.0", features = ["rt", "process", "net", "io-util", "macros", "signal", "time"] }
+tokio-stream = { version = "0.1.7", features = ["io-util"] }
+tokio-openssl = "0.6.2"
 serde_yaml = "0.8.14"
 
 [dev-dependencies]
-assert2 = "0.3.3"
+assert2 = "0.3.6"
