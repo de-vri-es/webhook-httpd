@@ -15,10 +15,12 @@ mod logging;
 mod maybe_tls;
 mod scheduler;
 mod types;
+mod tls_acceptor;
 
 use config::{Config, Hook};
 use maybe_tls::MaybeTls;
 use scheduler::Scheduler;
+use tls_acceptor::TlsAcceptor;
 
 use hyper::{server::conn::Http, Body, StatusCode};
 type Request = hyper::Request<Body>;
@@ -80,7 +82,7 @@ fn do_main(config: Config) -> Result<(), ()> {
 
 		let tls_acceptor = match &config.tls {
 			None => None,
-			Some(tls_config) => Some(load_tls_files(tls_config)?),
+			Some(tls_config) => Some(TlsAcceptor::from_config(tls_config)?),
 		};
 
 		let socket_address = config.socket_address();
@@ -107,16 +109,6 @@ fn do_main(config: Config) -> Result<(), ()> {
 		stop_tx.closed().await;
 		Ok(())
 	})
-}
-
-fn load_tls_files(config: &config::Tls) -> Result<openssl::ssl::SslAcceptor, ()> {
-	let mut builder = openssl::ssl::SslAcceptor::mozilla_modern_v5(openssl::ssl::SslMethod::tls_server())
-		.map_err(|e| log::error!("failed to configure TLS acceptor: {}", e))?;
-	builder.set_private_key_file(&config.private_key, openssl::ssl::SslFiletype::PEM)
-		.map_err(|e| log::error!("failed to load private key from {}: {}", config.certificate_chain.display(), e))?;
-	builder.set_certificate_chain_file(&config.certificate_chain)
-		.map_err(|e| log::error!("failed to load certificate chain from {}: {}", config.certificate_chain.display(), e))?;
-	Ok(builder.build())
 }
 
 fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<bool>) -> Result<BTreeMap<String, HookScheduler>, ()> {
@@ -146,7 +138,7 @@ fn hook_signals() -> Result<impl tokio::stream::Stream<Item = &'static str>, ()>
 
 async fn run_server(
 	mut listener: TcpListener,
-	tls_acceptor: Option<openssl::ssl::SslAcceptor>,
+	mut tls_acceptor: Option<TlsAcceptor>,
 	socket_address: std::net::SocketAddr,
 	hooks: Arc<BTreeMap<String, HookScheduler>>,
 ) -> Result<(), ()> {
@@ -157,13 +149,10 @@ async fn run_server(
 			.map_err(|e| log::error!("failed to accept connection on {}: {}", socket_address, e))?;
 		log::debug!("accepted new connection from {}", addr);
 
-		let connection = if let Some(tls_acceptor) = tls_acceptor.as_ref() {
-			match tokio_openssl::accept(tls_acceptor, connection).await {
+		let connection = if let Some(tls_acceptor) = tls_acceptor.as_mut() {
+			match tls_acceptor.accept(connection).await {
 				Ok(x) => MaybeTls::Tls(x),
-				Err(e) => {
-					log::error!("TLS handshake failed: {}", e);
-					continue;
-				}
+				Err(()) => continue,
 			}
 		} else {
 			MaybeTls::Plain(connection)

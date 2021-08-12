@@ -1,3 +1,7 @@
+# Version 0.1.2 - 2021-08-12
+
+* Reload TLS certificate and key after 24 hours.
+
 # Version 0.1.1 - 2020-12-20
 
 * Fix the `--print-example-config` command line option.
