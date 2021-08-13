@@ -1,4 +1,4 @@
-# Version 0.1.2 - 2021-08-12
+# Version 0.1.2 - 2021-08-13
 
 * Reload TLS certificate and key after 24 hours.
 * Update to tokio 1.9.
