@@ -1,3 +1,7 @@
+# main
+
+* Update dependencies.
+
 # Version 0.1.2 - 2021-08-13
 
 * Reload TLS certificate and key after 24 hours.

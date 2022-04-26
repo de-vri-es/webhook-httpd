@@ -332,7 +332,7 @@ fn get_signature_header(headers: &hyper::HeaderMap) -> Result<&str, String> {
 }
 
 fn compute_digest(secret: &str, data: &[u8]) -> String {
-	use hmac::{Mac, NewMac};
+	use hmac::Mac;
 	// HMAC keys can be any size, so unwrap can't fail.
 	let mut digest = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
 	digest.update(data);
