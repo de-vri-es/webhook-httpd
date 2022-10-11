@@ -1,3 +1,7 @@
+# Version 0.1.4 - 2022-10-11
+
+* Update dependencies.
+
 # Version 0.1.3 - 2022-04-26
 
 * Update dependencies.
