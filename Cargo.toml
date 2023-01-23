@@ -25,7 +25,7 @@ openssl = "0.10.35"
 serde = { version = "1.0.127", features = ["derive"] }
 sha2 = "0.10.2"
 structopt = "0.3.22"
-tokio = { version = "1.9.0", features = ["rt", "process", "net", "io-util", "macros", "signal", "time"] }
+tokio = { version = "1.23.1", features = ["rt", "process", "net", "io-util", "macros", "signal", "time"] }
 tokio-stream = { version = "0.1.7", features = ["io-util"] }
 tokio-openssl = "0.6.2"
 serde_yaml = "0.9.13"
