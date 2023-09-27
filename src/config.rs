@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::net::IpAddr;
 
+use crate::logging::LogLevel;
 use crate::types::QueueType;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -20,7 +21,7 @@ pub struct Config {
 
 	/// Log messages with this log leven and up.
 	#[serde(default = "default_log_level")]
-	pub log_level: log::LevelFilter,
+	pub log_level: LogLevel,
 
 	/// The hooks to execute when a matching request is received.
 	pub hooks: Vec<Hook>,
@@ -118,7 +119,7 @@ impl Config {
 		let path = path.as_ref();
 		let data = std::fs::read(path)
 			.map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
-		Self::parse(&data)
+		Self::parse(data)
 			.map_err(|e| format!("failed to parse {}: {}", path.display(), e))
 	}
 
@@ -141,8 +142,8 @@ fn default_port() -> u16 {
 	8091
 }
 
-fn default_log_level() -> log::LevelFilter {
-	log::LevelFilter::Info
+fn default_log_level() -> LogLevel {
+	LogLevel::Info
 }
 
 fn default_max_concurrent() -> MaybeBound {

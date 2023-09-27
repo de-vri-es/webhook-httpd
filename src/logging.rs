@@ -1,12 +1,22 @@
 use std::io::Write;
 
+#[derive(clap::ValueEnum)]
+#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Copy, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum LogLevel {
+	Trace,
+	Debug,
+	Info,
+	Warn,
+	Error,
+}
+
 /// Initialize the logging system with a pretty format.
 ///
 /// Logging for the specified root module will be set to Info, Debug or Trace,
 /// depending on the verbosity parameter.
-///
-/// Logging for all other modules is set to [`log::LevelFilter::Warn`].
-pub fn init(root_module: &str, level: log::LevelFilter) {
+pub fn init(root_module: &str, level: LogLevel) {
 	env_logger::Builder::from_default_env()
 		.format(|buffer, record: &log::Record| {
 			let now = chrono::Local::now();
@@ -44,6 +54,18 @@ pub fn init(root_module: &str, level: log::LevelFilter) {
 				msg = record.args()
 			)
 		})
-		.filter_module(root_module, level)
+		.filter_module(root_module, level.into())
 		.init();
+}
+
+impl From<LogLevel> for log::LevelFilter {
+	fn from(other: LogLevel) -> Self {
+		match other {
+			LogLevel::Trace => Self::Trace,
+			LogLevel::Debug => Self::Debug,
+			LogLevel::Info => Self::Info,
+			LogLevel::Warn => Self::Warn,
+			LogLevel::Error => Self::Error,
+		}
+	}
 }

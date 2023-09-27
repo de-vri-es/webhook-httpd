@@ -3,8 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use structopt::clap::AppSettings;
-use structopt::StructOpt;
+use logging::LogLevel;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{oneshot, watch};
@@ -26,41 +25,50 @@ use hyper::{server::conn::Http, Body, StatusCode};
 type Request = hyper::Request<Body>;
 type Response = hyper::Response<Body>;
 
-#[derive(StructOpt)]
-#[structopt(setting = AppSettings::ColoredHelp)]
-#[structopt(setting = AppSettings::DeriveDisplayOrder)]
-#[structopt(setting = AppSettings::UnifiedHelpMessage)]
+#[derive(clap::Parser)]
+#[clap(styles = clap_style())]
 struct Options {
 	/// The configuration file to load.
-	#[structopt(long, short)]
-	#[structopt(required_unless = "print-example-config")]
+	#[clap(long, short)]
+	#[clap(required_unless_present = "print_example_config")]
 	config: Option<PathBuf>,
 
 	/// Print example configuration and exit.
-	#[structopt(long)]
+	#[clap(long)]
 	print_example_config: bool,
 
 	/// Override the log level.
-	#[structopt(long, short)]
-	#[structopt(value_name = "LOG-LEVEL")]
-	#[structopt(possible_values = &["error", "warn", "info", "debug", "trace"])]
-	log_level: Option<log::LevelFilter>,
+	#[clap(long, short)]
+	#[clap(value_name = "LOG-LEVEL")]
+	#[clap(value_enum)]
+	log_level: Option<LogLevel>,
+}
+
+fn clap_style() -> clap::builder::Styles {
+	use clap::builder::styling::AnsiColor;
+	use clap::builder::styling::Style;
+
+	clap::builder::Styles::styled()
+		.header(Style::new().bold())
+		.usage(Style::new().bold())
+		.literal(AnsiColor::Cyan.on_default())
+		.placeholder(AnsiColor::Yellow.on_default())
 }
 
 fn main() {
-	let options = Options::from_args();
+	let options: Options = clap::Parser::parse();
 
 	if options.print_example_config {
 		println!("{}", Config::example());
 	} else {
-		match Config::read_from_file(&options.config.as_ref().unwrap()) {
+		match Config::read_from_file(options.config.as_ref().unwrap()) {
 			Err(e) => {
-				logging::init(module_path!(), options.log_level.unwrap_or(log::LevelFilter::Info));
+				logging::init(module_path!(), options.log_level.unwrap_or(LogLevel::Info));
 				log::error!("{}", e);
 				std::process::exit(1);
 			}
 			Ok(config) => {
-				logging::init(module_path!(), options.log_level.unwrap_or(config.log_level));
+				logging::init(module_path!(), options.log_level.unwrap_or(LogLevel::Info));
 				if let Err(()) = do_main(config) {
 					std::process::exit(1);
 				}
@@ -207,7 +215,7 @@ impl HookScheduler {
 		let hook = self.hook.clone();
 		Box::pin(async move {
 			for cmd in &hook.commands {
-				if let Err(()) = run_command(&cmd, &hook, &request, &body, remote_addr).await {
+				if let Err(()) = run_command(cmd, &hook, &request, &body, remote_addr).await {
 					// Ignore errors: other end of channel was dropped, nobody cares about our response anymore.
 					done_tx.send(generic_error()).unwrap_or(());
 					return;
@@ -381,7 +389,7 @@ fn set_request_environment(command: &mut tokio::process::Command, request: &Requ
 			command.env("CONTENT_TYPE", OsStr::from_bytes(content_type.as_bytes()));
 		}
 	}
-	command.env("URL_PATH", request.uri().path().to_string());
+	command.env("URL_PATH", request.uri().path());
 	command.env("URL_QUERY", request.uri().query().unwrap_or(""));
 	command.env("REMOTE_ADDRESS", remote_addr.ip().to_string());
 	command.env("REMOTE_PORT", remote_addr.port().to_string());

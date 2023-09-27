@@ -1,3 +1,7 @@
+# Unreleased
+
+* Replace `structopt` with `clap`.
+
 # Version 0.1.4 - 2022-10-11
 
 * Update dependencies.
