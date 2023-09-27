@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use logging::LogLevel;
 use tokio::net::TcpListener;
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{oneshot, watch};
 use tokio_stream::StreamExt;
 
@@ -132,15 +131,29 @@ fn build_hook_schedulers(hooks: Vec<Hook>, stop_rx: watch::Receiver<()>) -> Resu
 }
 
 fn hook_signals() -> Result<impl std::future::Future<Output = &'static str>, ()> {
-	let mut sigint = signal(SignalKind::interrupt())
-		.map_err(|e| log::error!("failed to register SIGINT handler: {}", e))?;
-	let mut sigterm = signal(SignalKind::terminate())
-		.map_err(|e| log::error!("failed to register SIGTERM handler: {}", e))?;
-	Ok(async move {
-		tokio::select!(
-			_ = sigint.recv() => "SIGINT",
-			_ = sigterm.recv() => "SIGTERM",
-		)
+	#[cfg(unix)]
+	{
+		use tokio::signal::unix::{signal, SignalKind};
+		let mut sigint = signal(SignalKind::interrupt())
+			.map_err(|e| log::error!("failed to register SIGINT handler: {}", e))?;
+		let mut sigterm = signal(SignalKind::terminate())
+			.map_err(|e| log::error!("failed to register SIGTERM handler: {}", e))?;
+		Ok(async move {
+			tokio::select!(
+				_ = sigint.recv() => "SIGINT",
+				_ = sigterm.recv() => "SIGTERM",
+			)
+		})
+	}
+	#[cfg(not(unix))]
+	Ok(async {
+		match tokio::signal::ctrl_c().await {
+			Ok(()) => "SIGINT",
+			Err(e) => {
+				log::error!("Failed to wait for interrupt signal: {e}");
+				"ERROR"
+			}
+		}
 	})
 }
 
@@ -380,13 +393,11 @@ fn generic_error() -> Response {
 }
 
 fn set_request_environment(command: &mut tokio::process::Command, request: &Request, body: Option<&[u8]>, remote_addr: SocketAddr) {
-	use std::ffi::OsStr;
-	use std::os::unix::ffi::OsStrExt;
-
 	if let Some(body) = body {
 		command.env("CONTENT_LENGTH", body.len().to_string());
 		if let Some(content_type) = request.headers().get("Content-Type") {
-			command.env("CONTENT_TYPE", OsStr::from_bytes(content_type.as_bytes()));
+			let content_type = String::from_utf8_lossy(content_type.as_bytes());
+			command.env("CONTENT_TYPE", content_type.as_ref());
 		}
 	}
 	command.env("URL_PATH", request.uri().path());
