@@ -1,4 +1,4 @@
-# Unreleased
+# Version 0.1.5 - 2023-09-28
 
 * Replace `structopt` with `clap`.
 * Fix compilation on non-Unix platforms.
