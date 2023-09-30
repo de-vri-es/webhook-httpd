@@ -11,9 +11,9 @@ log-level: info
 
 # The TLS section is optional.
 # If it is present, the server will only accept HTTPS requests.
-tls:
-  private-key: /etc/letsencrypt/live/example.com/privkey.pem
-  certificate-chain: /etc/letsencrypt/live/example.com/fullchain.pem
+#tls:
+#  private-key: /etc/letsencrypt/live/example.com/privkey.pem
+#  certificate-chain: /etc/letsencrypt/live/example.com/fullchain.pem
 
 # The hooks.
 hooks:
@@ -22,6 +22,27 @@ hooks:
   - url: "/print-env"
     commands:
       - cmd: ["env"]
+
+  - url: "/print-env-win32"
+    commands:
+      - cmd: ["cmd.exe","/c","set"]
+
+  - url: "/print-cwd"
+    commands:
+      - cmd: ["pwd"]
+
+  - url: "/print-cwd-win32"
+    commands:
+      - cmd: ["cmd.exe","/c","cd"]
+
+  - url: "/multipart-stdin"
+    commands:
+      - cmd: ["target/debug/examples/multipart-stdin"]
+        stdin: request-body
+    environment: 
+      OUTPUT_FOLDER: uploads
+      COUNT_SUFFIX: 1
+      APPLY_TIMESTAMP: 1
 
   - url: "/make-release-tarball"
     commands:

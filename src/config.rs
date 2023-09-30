@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::net::IpAddr;
+use indexmap::IndexMap;
 
 use crate::logging::LogLevel;
 use crate::types::QueueType;
@@ -49,6 +50,10 @@ pub struct Hook {
 
 	/// The commands to execute when the hook is triggered.
 	pub commands: Vec<Command>,
+
+	/// The environment variables to set when the hook is triggered.
+	#[serde(default)]
+	pub environment: IndexMap<String, String>,
 
 	/// The maxmimum number of concurrent jobs for the hook.
 	///
