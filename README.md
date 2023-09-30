@@ -89,8 +89,7 @@ Add the hook:
         stdin: request-body
     environment:
         OUTPUT_FOLDER: uploads
-        COUNT_SUFFIX: 1
-        APPLY_TIMESTAMP: 1
+        PREFIX_TIMESTAMP: 1
 ```
 
 Run the server:

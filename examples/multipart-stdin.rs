@@ -1,110 +1,87 @@
-use tokio::io;
 use multer::Multipart;
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::io::Write;
-use std::fs;
 use chrono::Local;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Read the CONTENT_TYPE environment variable to get the boundary
-    let content_type = match std::env::var("CONTENT_TYPE") {
-        Ok(content_type) => content_type,
-        Err(_) => {
-            eprintln!("Error: CONTENT_TYPE environment variable not found.");
-            return Ok(());
-        }
-    };
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+	if let Err(()) = do_main().await {
+		std::process::exit(1);
+	}
+}
 
-    // Parse the boundary from the content_type, exit early if we don't have it.
-    let boundary = match content_type.split(';').find(|s| s.trim().starts_with("boundary=")) {
-        Some(boundary) => boundary.trim().trim_start_matches("boundary=").to_string(),
-        None => {
-            eprintln!("Error: Boundary not found in CONTENT_TYPE.");
-            return Ok(());
-        }
-    };
+async fn do_main() -> Result<(), ()> {
+	// Read the CONTENT_TYPE environment variable to get the boundary
+	let content_type = std::env::var("CONTENT_TYPE")
+		.map_err(|e| eprintln!("Error: Failed to get CONTENT_TYPE environment variable: {e}"))?;
 
-    // Read the OUTPUT_FOLDER environment variable to store files somewhere
-    let output_folder = std::env::var("OUTPUT_FOLDER").unwrap_or_default();
-	if !output_folder.is_empty() {
-	    println!("writing to: {}",output_folder);
-		if !Path::new(&output_folder).is_dir() {
-        	if let Err(err) = fs::create_dir_all(&output_folder) {
-            	eprintln!("Error creating directory: {}", err);
-        	} else {
-            	println!("Directory '{}' created successfully.", output_folder);
-        	}
-	    }
-    } else {
-        println!("No output folder specified.");
-    }
+	// Parse the boundary from the content_type, exit early if we don't have it.
+	let boundary = multer::parse_boundary(content_type)
+		.map_err(|e| eprintln!("Error: Failed to parse multipart boundary from CONTENT_TYPE: {e}"))?;
 
-    let mut multipart = Multipart::with_reader(io::stdin(), &boundary);
-    while let Some(mut field) = multipart.next_field().await? {
-        let field_name = field.name().unwrap_or_default().to_string();
-        let has_filename= field.file_name().map(|s| s.to_string());
+	// Read the OUTPUT_FOLDER environment variable to store files somewhere
+	let output_folder = std::env::var("OUTPUT_FOLDER")
+		.map_err(|e| eprintln!("Error: Failed to get OUTPUT_FOLDER environment variable: {e}"))?;
+	let output_folder = Path::new(&output_folder);
 
-        // Check if the field has a file name
-        if let Some(file_name) = has_filename {
-            println!("Writing a file: {}", &file_name);
+	// Create the output folder.
+	eprintln!("Output folder: {}", output_folder.display());
+	std::fs::create_dir_all(output_folder)
+		.map_err(|e| eprintln!("Error: Failed to create output folder: {e}"))?;
 
-			let apply_timestamp = std::env::var("APPLY_TIMESTAMP").is_ok();
-			let timestamp = if apply_timestamp {
-                format!("_{}", Local::now().format("%Y%m%d%H%M"))
-            } else {
-                "".to_string()
-            };
-            let file_extension = Path::new(&file_name)
-                .extension()
-                .map(|ext| ext.to_str().unwrap_or(""))
-                .unwrap_or("");
-			let file_name_noext = extract_filename_without_ext(&file_name);
-            let mut unique_name = format!("{}{}.{}", file_name_noext, timestamp, file_extension);
-            let mut unique_file_name = Path::new(&output_folder).join(unique_name);
+	// Check the PREFIX_TIMESTAMP environment variable to check if we should prefix uploaded files with a timestamp.
+	let prefix_timestamp = std::env::var_os("PREFIX_TIMESTAMP").unwrap_or_default();
+	let prefix_timestamp = prefix_timestamp != "0" && prefix_timestamp != "" && prefix_timestamp != "false";
+	eprintln!("Add timestamp to file names: {prefix_timestamp}");
 
-			// Loop until a unique filename is found
-			let count_suffix = std::env::var("COUNT_SUFFIX").is_ok();
-			if count_suffix {
-				let mut counter = 0;
-				while unique_file_name.exists() {
-                	unique_name = format!("{}{}.{}.{}", file_name_noext, timestamp, counter, file_extension);
-                	unique_file_name = PathBuf::from(&output_folder).join(&unique_name);
-                	counter += 1;
-            	}
+	// Remember one timestamp so all files from one upload get the same timestamp.
+	let now = Local::now().format("%Y%m%d%H%M%S");
+
+	// Loop over all multipart fields.
+	let mut multipart = Multipart::with_reader(tokio::io::stdin(), &boundary);
+	while let Some(field) = multipart.next_field().await.transpose() {
+		let mut field = field.map_err(|e| eprintln!("Error: Failed to get next multipart field: {e}"))?;
+
+		let Some(field_name) = field.name().map(|x| x.to_owned()) else {
+			eprintln!("Found multipart field without name, skipping");
+			continue;
+		};
+
+		let Some(file_name) = field.file_name().map(|x| x.to_owned()) else {
+			let text = field.text().await
+				.map_err(|e| eprintln!("Error: Failed to get data for field {field_name}: {e}"))?;
+			let text = text.strip_suffix('\n').unwrap_or(&text);
+			if text.contains('\n') {
+				eprintln!("Field {field_name}:\n{text}\n");
+			} else {
+				eprintln!("Field {field_name}: {text}");
 			}
+			continue;
+		};
 
-            if let Ok(mut file) = File::create(&unique_file_name) {
-                while let Some(chunk) = field.chunk().await? {
-                    if let Err(e) = file.write_all(&chunk) {
-                        eprintln!("Error writing to file: {}", e);
-                        break;
-                    }
-                }
-                println!("File '{}' uploaded and saved as '{:?}'", &file_name, &unique_file_name);
-            } else {
-                eprintln!("Error creating file: {}", &file_name);
-            }
-        } else {
-            while let Some(chunk) = field.chunk().await? {
-                println!("Field '{}' = {}", field_name, String::from_utf8_lossy(&chunk));
-            }
-        }
-    }
+		eprintln!("Field {field_name}: file upload with name {file_name:?}");
 
-    Ok(())
+		let output_file = match prefix_timestamp {
+			true => output_folder.join(format!("{}-{file_name}", now)),
+			false => output_folder.join(&file_name),
+		};
+
+		let mut file = std::fs::OpenOptions::new()
+			.create_new(true)
+			.write(true)
+			.open(&output_file)
+			.map_err(|e| eprintln!("Error: Failed to create {}: {e}", output_file.display()))?;
+
+		while let Some(chunk) = field.chunk().await.transpose() {
+			let chunk = chunk.map_err(|e| eprintln!("Error: Failed to read data chunk from stdin: {e}"))?;
+			if let Err(e) = file.write_all(&chunk) {
+				eprintln!("Error: Failed to write to {}: {e}", output_file.display());
+				break;
+			}
+		}
+
+		eprintln!("Saved file {file_name:?} to {}", output_file.display());
+	}
+
+	Ok(())
 }
-
-fn extract_filename_without_ext(file_name: &str) -> String {
-    let file_path = Path::new(file_name);
-
-    if let Some(file_stem) = file_path.file_stem() {
-        if let Some(file_stem_str) = file_stem.to_str() {
-            return file_stem_str.to_string();
-        }
-    }
-
-    String::new()
-}
-
