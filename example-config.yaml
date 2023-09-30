@@ -11,9 +11,9 @@ log-level: info
 
 # The TLS section is optional.
 # If it is present, the server will only accept HTTPS requests.
-#tls:
-#  private-key: /etc/letsencrypt/live/example.com/privkey.pem
-#  certificate-chain: /etc/letsencrypt/live/example.com/fullchain.pem
+# tls:
+#   private-key: /etc/letsencrypt/live/example.com/privkey.pem
+#   certificate-chain: /etc/letsencrypt/live/example.com/fullchain.pem
 
 # The hooks.
 hooks:
@@ -23,23 +23,19 @@ hooks:
     commands:
       - cmd: ["env"]
 
-  - url: "/print-env-win32"
-    commands:
-      - cmd: ["cmd.exe","/c","set"]
-
+  # A hook that prints the current working directory, useful for debugging.
+  # Output is sent to the server log, not as HTTP response body.
   - url: "/print-cwd"
     commands:
       - cmd: ["pwd"]
 
-  - url: "/print-cwd-win32"
-    commands:
-      - cmd: ["cmd.exe","/c","cd"]
-
+  # A hook that handles file uploads from a multipart/form-data request.
+  # You need to run `cargo build --examples` for this hook to work.
   - url: "/multipart-stdin"
     commands:
       - cmd: ["target/debug/examples/multipart-stdin"]
         stdin: request-body
-    environment: 
+    environment:
       OUTPUT_FOLDER: uploads
       COUNT_SUFFIX: 1
       APPLY_TIMESTAMP: 1
