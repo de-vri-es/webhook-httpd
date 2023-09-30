@@ -1,0 +1,64 @@
+# By default, the server accepts connections on all addresses.
+# You can limit this by setting `bind-address` to a specific IP address.
+bind-address: "::"
+
+# Choose a port number to listen on.
+port: 8091
+
+# The log level of the server.
+# You can choose from: error, warn, info, debug and trace.
+log-level: info
+
+# The TLS section is optional.
+# If it is present, the server will only accept HTTPS requests.
+# tls:
+#   private-key: /etc/letsencrypt/live/example.com/privkey.pem
+#   certificate-chain: /etc/letsencrypt/live/example.com/fullchain.pem
+
+# The hooks.
+hooks:
+  # A hook that prints the script environment, useful for debugging.
+  # Output is sent to the server log, not as HTTP response body.
+  - url: "/print-env"
+    commands:
+      - cmd: ["cmd.exe","/c","set"]
+
+  # A hook that prints the current working directory, useful for debugging.
+  # Output is sent to the server log, not as HTTP response body.
+  - url: "/print-cwd-win32"
+    commands:
+      - cmd: ["cmd.exe","/c","cd"]
+
+  # A hook that handles file uploads from a multipart/form-data request.
+  # You need to run `cargo build --examples` for this hook to work.
+  - url: "/multipart-stdin"
+    commands:
+      - cmd: ["target/debug/examples/multipart-stdin"]
+        stdin: request-body
+    environment:
+      OUTPUT_FOLDER: uploads
+      COUNT_SUFFIX: 1
+      APPLY_TIMESTAMP: 1
+
+  - url: "/make-release-tarball"
+    commands:
+      - cmd: ["make-release-tarball"]
+        stdin: request-body
+    working-dir: "/path/to/repository/"
+    # Run only one concurrent job, but queue all requests in a FIFO queue.
+    max-concurrent: 1
+    queue-size: unlimited
+    queue-type: fifo
+    # The secret used to verify the `X-Hub-Signature-256` header.
+    # Always generate your own random secrets.
+    secret: "some-randomly-generated-secret"
+
+  - url: "/update-daemon-config"
+    # This hook uses the default scheduling parameters.
+    # That means at most a single concurrent job,
+    # and a LIFO queue with a maximum queue size of 1.
+    commands:
+      - cmd: ["git", "fetch"]
+      - cmd: ["git", "reset", "--hard", "origin/main"]
+      - cmd: ["systemctl", "reload", "my-little-service"]
+    working-dir: "/etc/my-little-service/"
