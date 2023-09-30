@@ -1,6 +1,7 @@
 Copyright 2020, Maarten de Vries <maarten@de-vri.es>
 
 Copyright 2020, Maarten de Vries <maarten@de-vri.es>
+Copyright 2023, David Horner
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:

@@ -69,3 +69,36 @@ The crate has one optional feature: `static-openssl`.
 When the feature is enabled, `openssl` is linked statically against a locally compiled OpenSSL.
 This can be used to create a binary with a minimal set of runtime dependencies,
 and it can make compilation easier on systems with no recent version of OpenSSL readily available.
+
+On windows, this has been reported to work.
+```
+choco install openssl
+set OPENSSL_DIR=C:\Program Files\OpenSSL-Win64
+```
+
+## Examples
+The `multipart-stdin` example shows how to process `multipart/form-data` from stdin and how to pass additional environment variables to your hooks from the config file.
+
+Build the example
+```sh
+ cargo build --example multipart-stdin --features static-openssl
+```
+
+Add the hook (windows example)
+```
+  - url: "/multipart-stdin"
+    commands:
+      - cmd: ["cmd.exe","/c","target\\debug\\examples\\multipart-stdin.exe"]
+        stdin: request-body
+    environment: ["OUTPUT_FOLDER=uploads","COUNT_SUFFIX","APPLY_TIMESTAMP"]
+```
+
+Run the server:
+```sh
+cargo run --features static-openssl -- --config example-config.yaml
+```
+
+You can test the endpoint using `curl` with the `-F` option:
+```sh
+curl -X POST -F "key1=value1" -F "key2=value2" -F "file=@Cargo.toml"   http://localhost:8091/multipart-stdin
+```

@@ -306,6 +306,11 @@ async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body
 		set_request_environment(&mut command, request, None, remote_addr);
 	}
 
+	// Set hook environment variables
+	for (name, value) in &hook.environment {
+		command.env(name, value);
+	}
+
 	let mut subprocess = command.spawn().map_err(|e| log::error!("{}: failed to run command {:?}: {}", hook.url, cmd.cmd(), e))?;
 
 	if let Some(mut stdin) = subprocess.stdin.take() {
