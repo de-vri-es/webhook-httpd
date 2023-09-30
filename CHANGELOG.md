@@ -1,4 +1,4 @@
-# Unreleased
+# Version 0.1.6 - 2023-09-30
 
 * Add separate example configuration for Windows.
 * Add example to process `multipart/form-data` file uploads.
