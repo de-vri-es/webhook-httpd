@@ -95,6 +95,8 @@ pub struct Command {
 
 	#[serde(default = "default_stdin")]
 	stdin: Stdin,
+	#[serde(default = "default_has_response")]
+	has_response: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +169,10 @@ fn default_stdin() -> Stdin {
 	Stdin::Nothing
 }
 
+fn default_has_response() -> bool {
+	false
+}
+
 impl<'de> Deserialize<'de> for MaybeBound {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
@@ -213,6 +219,10 @@ impl Command {
 
 	pub fn wants_request_body(&self) -> bool {
 		self.stdin == Stdin::RequestBody
+	}
+
+	pub fn has_response(&self) -> bool {
+		self.has_response == true
 	}
 }
 

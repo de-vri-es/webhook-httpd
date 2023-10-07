@@ -7,6 +7,7 @@ use logging::LogLevel;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tokio_stream::StreamExt;
+use tokio::io::AsyncReadExt;
 
 mod config;
 mod logging;
@@ -228,10 +229,18 @@ impl HookScheduler {
 		let hook = self.hook.clone();
 		Box::pin(async move {
 			for cmd in &hook.commands {
-				if let Err(()) = run_command(cmd, &hook, &request, &body, remote_addr).await {
-					// Ignore errors: other end of channel was dropped, nobody cares about our response anymore.
-					done_tx.send(generic_error()).unwrap_or(());
-					return;
+				match run_command(cmd, &hook, &request, &body, remote_addr).await {
+					Ok(x) => {
+					if x.len()>0 {
+            			done_tx.send(simple_response(StatusCode::OK, x)).unwrap_or(());
+					    return;
+					}
+					},
+					Err(e)=> {
+					    // Ignore errors: other end of channel was dropped, nobody cares about our response anymore.
+					    done_tx.send(generic_error()).unwrap_or(());
+					    return;
+					}
 				}
 			}
 			// Ignore errors: other end of channel was dropped, nobody cares about our response anymore.
@@ -284,7 +293,7 @@ async fn handle_request(hooks: &BTreeMap<String, HookScheduler>, mut request: Re
 	Ok(hook.post(request, body, remote_addr).await)
 }
 
-async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body: &[u8], remote_addr: SocketAddr) -> Result<(), ()> {
+async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body: &[u8], remote_addr: SocketAddr) -> Result<Vec<u8>, ()> {
 	use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 	use tokio_stream::wrappers::LinesStream;
 
@@ -320,19 +329,30 @@ async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body
 			.map_err(|e| log::error!("{}: failed to write request body to stdin of command {:?}: {}", hook.url, cmd.cmd(), e))?;
 	}
 
-	let stdout = LinesStream::new(BufReader::new(subprocess.stdout.take().unwrap()).lines());
-	let stderr = LinesStream::new(BufReader::new(subprocess.stderr.take().unwrap()).lines());
-	let mut output = stdout.merge(stderr);
+	let mut stdout = Vec::new();
+	if cmd.has_response() {
+		if let Some(mut stdout_pipe) = subprocess.stdout.take() {
+			// Use AsyncReadExt to read data into the stdout buffer
+			stdout_pipe
+				.read_to_end(&mut stdout)
+				.await
+				.map_err(|e| log::error!("{}: failed to read command {:?} stdout: {}", hook.url, cmd.cmd(), e))?;
+		}
+	} else {
+		let stdout = LinesStream::new(BufReader::new(subprocess.stdout.take().unwrap()).lines());
+		let stderr = LinesStream::new(BufReader::new(subprocess.stderr.take().unwrap()).lines());
+		let mut output = stdout.merge(stderr);
 
-	while let Some(line) = output.next().await {
-		let line = match line {
-			Ok(x) => x,
-			Err(e) => {
-				log::error!("{}: failed to read command {:?} output: {}", hook.url, cmd.cmd(), e);
-				break;
-			},
-		};
-		log::info!("{}: {}: {}", hook.url, cmd.cmd(), line);
+		while let Some(line) = output.next().await {
+			let line = match line {
+				Ok(x) => x,
+				Err(e) => {
+					log::error!("{}: failed to read command {:?} output: {}", hook.url, cmd.cmd(), e);
+					break;
+				},
+			};
+			log::info!("{}: {}: {}", hook.url, cmd.cmd(), line);
+		}
 	}
 
 	let status = subprocess
@@ -340,7 +360,7 @@ async fn run_command(cmd: &config::Command, hook: &Hook, request: &Request, body
 		.await
 		.map_err(|e| log::error!("{}: failed to wait for command {:?}: {}", hook.url, cmd.cmd(), e))?;
 	if status.success() {
-		Ok(())
+		Ok(stdout)
 	} else {
 		log::error!("{}: command {:?} exitted with {}", hook.url, cmd.cmd(), status);
 		Err(())
