@@ -1,3 +1,8 @@
+# Version 0.1.6 - 2023-09-30
+
+* Add separate example configuration for Windows.
+* Add example to process `multipart/form-data` file uploads.
+
 # Version 0.1.5 - 2023-09-28
 
 * Replace `structopt` with `clap`.

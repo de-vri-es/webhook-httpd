@@ -70,11 +70,8 @@ When the feature is enabled, `openssl` is linked statically against a locally co
 This can be used to create a binary with a minimal set of runtime dependencies,
 and it can make compilation easier on systems with no recent version of OpenSSL readily available.
 
-On windows, this has been reported to work.
-```
-choco install openssl
-set OPENSSL_DIR=C:\Program Files\OpenSSL-Win64
-```
+For more information on how to build with a locally installed version of OpenSSL see:
+https://docs.rs/openssl/latest/openssl/#building
 
 ## Examples
 The `multipart-stdin` example shows how to process `multipart/form-data` from stdin and how to pass additional environment variables to your hooks from the config file.
@@ -84,13 +81,15 @@ Build the example
  cargo build --example multipart-stdin --features static-openssl
 ```
 
-Add the hook (windows example)
-```
+Add the hook:
+```yaml:
   - url: "/multipart-stdin"
     commands:
-      - cmd: ["cmd.exe","/c","target\\debug\\examples\\multipart-stdin.exe"]
+      - cmd: [""target/debug/examples/multipart-stdin"]
         stdin: request-body
-    environment: ["OUTPUT_FOLDER=uploads","COUNT_SUFFIX","APPLY_TIMESTAMP"]
+    environment:
+        OUTPUT_FOLDER: uploads
+        PREFIX_TIMESTAMP: 1
 ```
 
 Run the server:

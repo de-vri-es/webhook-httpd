@@ -21,13 +21,13 @@ hooks:
   # Output is sent to the server log, not as HTTP response body.
   - url: "/print-env"
     commands:
-      - cmd: ["env"]
+      - cmd: ["cmd.exe","/c","set"]
 
   # A hook that prints the current working directory, useful for debugging.
   # Output is sent to the server log, not as HTTP response body.
-  - url: "/print-cwd"
+  - url: "/print-cwd-win32"
     commands:
-      - cmd: ["pwd"]
+      - cmd: ["cmd.exe","/c","cd"]
 
   # A hook that handles file uploads from a multipart/form-data request.
   # You need to run `cargo build --examples` for this hook to work.
@@ -49,7 +49,7 @@ hooks:
     queue-size: unlimited
     queue-type: fifo
     # The secret used to verify the `X-Hub-Signature-256` header.
-    # Always generate you're own random secrets.
+    # Always generate your own random secrets.
     secret: "some-randomly-generated-secret"
 
   - url: "/update-daemon-config"

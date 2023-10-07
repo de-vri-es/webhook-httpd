@@ -6,6 +6,11 @@ use indexmap::IndexMap;
 use crate::logging::LogLevel;
 use crate::types::QueueType;
 
+#[cfg(any(test, not(windows)))]
+const EXAMPLE_CONFIG_UNIX: &str = include_str!("../example-config.yaml");
+#[cfg(any(test, windows))]
+const EXAMPLE_CONFIG_WINDOWS: &str = include_str!("../example-config.windows.yaml");
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "kebab-case")]
@@ -131,7 +136,12 @@ impl Config {
 	}
 
 	pub fn example() -> &'static str {
-		include_str!("../example-config.yaml")
+		#[cfg(not(windows))] {
+			EXAMPLE_CONFIG_UNIX
+		}
+		#[cfg(windows)] {
+			EXAMPLE_CONFIG_WINDOWS
+		}
 	}
 }
 
@@ -255,6 +265,7 @@ mod test {
 
 	#[test]
 	fn deserialize_example_hooks() {
-		assert!(let Ok(_) = Config::parse(Config::example()))
+		assert!(let Ok(_) = Config::parse(EXAMPLE_CONFIG_UNIX));
+		assert!(let Ok(_) = Config::parse(EXAMPLE_CONFIG_WINDOWS));
 	}
 }
