@@ -22,7 +22,7 @@ env_logger = "0.10.0"
 hmac = "0.12.1"
 hyper = { version = "0.14.11", features = ["http1", "http2", "runtime", "server"] }
 log = { version = "0.4.14", features = ["serde"] }
-openssl = "0.10.60"
+openssl = "0.10.66"
 serde = { version = "1.0.127", features = ["derive"] }
 serde_yaml = "0.9.13"
 sha2 = "0.10.2"
